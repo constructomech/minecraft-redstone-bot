@@ -95,6 +95,11 @@ The full loop is also written up in `building-contraptions/SKILL.md`.
   authoritative — fetch them when implementing pack code.
 - **BDS install or upgrade issues:** load `bds-setup`.
 - **What patterns exist:** load `pattern-library`.
+- **Did the pack actually work?** load `self-testing` and run
+  `npm run selftest` before asking the user to verify. The harness
+  drives the pack from BDS stdin via `/scriptevent`, no player
+  required, and finishes in ~8s. Only ask the user when the change is
+  player-visible (particles, chat-issued commands).
 
 ## Phase awareness
 

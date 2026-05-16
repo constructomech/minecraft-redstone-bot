@@ -43,13 +43,16 @@ Agent:  → drafts a ContraptionSpec
 
 ## Status
 
-Phase 2. The pack registers `/rsforge:hello`, `/rsforge:anchor`,
+Phase 2.5. The pack registers `/rsforge:hello`, `/rsforge:anchor`,
 `/rsforge:anchor_clear`, and `/rsforge:anchor_show`, persists the
 anchor via world dynamic properties, and heartbeats its state every
 ~2s to a host-side Node daemon (`tools/forge.mjs`). The daemon
 exposes an authenticated HTTP API (`/health`, `/anchor`, `/echo`) for
-the agent and the CLI. The full LLM-driven build loop (Phase 3+) is
-not wired yet. See [PLAN.md](PLAN.md) for the phased roadmap.
+the agent and the CLI. An end-to-end self-test harness
+(`npm run selftest`) drives the pack via `/scriptevent` from BDS
+stdin and verifies everything end-to-end in ~8 seconds without a
+player. The full LLM-driven build loop (Phase 3+) is not wired yet.
+See [PLAN.md](PLAN.md) for the phased roadmap.
 
 ## Requirements
 
@@ -96,6 +99,23 @@ node tools/forge.mjs health
 Connect from your Bedrock client to `127.0.0.1:25565`. Set an anchor
 with `/rsforge:anchor`. Within 2 seconds, `node tools/forge.mjs anchor`
 on the host shows it.
+
+### Self-test (no player needed)
+
+Once the pack is deployed, the agent can verify the entire pipeline
+without anyone joining the world:
+
+```pwsh
+# Make sure nothing else is using port 33000 or running bedrock_server.exe.
+npm run selftest
+```
+
+In ~8 seconds it spawns the daemon, boots BDS, drives the pack via
+`/scriptevent` from BDS stdin, asserts heartbeats reach the daemon and
+the anchor state propagates, then shuts everything down cleanly.
+Exits non-zero on any failure. See
+[`.agents/skills/self-testing/SKILL.md`](.agents/skills/self-testing/SKILL.md)
+for how to extend it.
 
 > Why port 25565 and not the documented 19132? The Bedrock client itself
 > reserves UDP 19132 through ~19500 for LAN discovery and the

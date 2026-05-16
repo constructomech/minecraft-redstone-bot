@@ -384,6 +384,53 @@ Exit criteria: from this directory,
 is running with the pack. Setting/clearing the anchor in-game shows
 up in the next heartbeat within ~2 seconds.
 
+### Phase 2.5 — Autonomous self-test harness
+
+Out-of-band phase inserted between Phase 2 and Phase 3. Goal: let the
+agent verify end-to-end flows without needing the user to join the
+world and run commands. The agent's iteration loop in Phase 3+ would
+otherwise be gated on human turnaround for every test cycle.
+
+Approach: server-source `/scriptevent` commands invoked over BDS's
+stdin. `scriptevent` runs as `Server` source (no player required) and
+the BDS console accepts commands typed to stdin, so we can drive the
+pack from a parent Node process. Player-required flows (chat-issued
+custom commands, visible particles, etc.) still need the user; this
+covers everything else.
+
+Deliverables:
+
+- `pack/src/debug.ts`: scriptevent handlers, only active when
+  `variables.get("debug_enabled") === true`:
+  - `rsforge:debug_setanchor` payload `"<x> <y> <z> <facing> [dim]"`
+    — sets the anchor at explicit coords (server source has no
+    player position to use).
+  - `rsforge:debug_clearanchor`.
+  - `rsforge:debug_state` — logs the current anchor JSON to BDS
+    console so the harness can read it back from stdout if needed.
+- `pack-deploy.ps1`: emit `debug_enabled: true` in the per-pack
+  `variables.json` so debug is on by default in development.
+- `tools/bds-control.mjs`: a `BdsProcess` class wrapping
+  `spawn(bedrock_server.exe, …)` with stdin + stdout pipes and:
+  - `start()` — spawn and wait for `Server started.`
+  - `send(cmd)` — write a command to stdin
+  - `waitForLog(regex, opts)` — resolve when matching line appears
+  - `stop()` — send `stop\n` to stdin, wait for clean exit
+  - `getLog()` — captured stdout so far, for diff on failure
+- `tools/selftest.mjs`: end-to-end orchestrator. Spawns daemon and
+  BDS, waits for pack registration, fires test scriptevents, queries
+  the forge CLI/API, asserts state matches expectations, tears
+  everything down. Prints `[PASS] / [FAIL]` lines and exits non-zero
+  if anything failed. Designed to be run repeatedly by the agent
+  during Phase 3+ iteration.
+- New skill: `self-testing/SKILL.md` (or merged into a related
+  skill) so future agent sessions know to use the harness instead of
+  asking the user to join the world for every test.
+
+Exit criteria: `node tools/selftest.mjs` completes with all checks
+green from a clean repo state, without any human interaction beyond
+starting the script.
+
 ### Phase 3 — Spec schema + builder
 
 Deliverables:

@@ -229,7 +229,10 @@ foreach ($cfgUuid in @($scriptModuleUuid, $headerUuid)) {
     if (-not (Test-Path -LiteralPath $cfgDir)) {
         New-Item -ItemType Directory -Path $cfgDir -Force | Out-Null
     }
-    @{ forge_endpoint = $forgeUrl } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $cfgDir 'variables.json') -Encoding utf8
+    @{
+        forge_endpoint = $forgeUrl
+        debug_enabled  = $true
+    } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $cfgDir 'variables.json') -Encoding utf8
     @{ forge_token    = $forgeToken } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $cfgDir 'secrets.json')   -Encoding utf8
     @{ allowed_modules = $packAllowedModules } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $cfgDir 'permissions.json') -Encoding utf8
     Write-Note "config\$cfgUuid\{variables,secrets,permissions}.json"

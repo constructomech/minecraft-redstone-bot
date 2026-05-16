@@ -8,6 +8,7 @@
   "scripts": {
     "build": "node tools/pack-build.mjs",
     "deploy": "node tools/pack-build.mjs && pwsh tools/pack-deploy.ps1",
+    "selftest": "node tools/selftest.mjs",
     "typecheck": "tsc -p pack/tsconfig.json --noEmit"
   },
   "devDependencies": {
