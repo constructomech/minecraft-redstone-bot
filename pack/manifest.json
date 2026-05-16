@@ -1,0 +1,26 @@
+{
+  "format_version": 2,
+  "header": {
+    "name": "Redstone Forge",
+    "description": "LLM-driven redstone contraption builder pack.",
+    "uuid": "860c5e8c-cb94-442c-ae54-477935c5f446",
+    "version": [0, 1, 0],
+    "min_engine_version": [1, 26, 21]
+  },
+  "modules": [
+    {
+      "type": "script",
+      "description": "Redstone Forge main script module.",
+      "uuid": "53e34cc4-67b8-4bce-8793-e7d26b1cdaf5",
+      "version": [0, 1, 0],
+      "language": "javascript",
+      "entry": "scripts/main.js"
+    }
+  ],
+  "dependencies": [
+    {
+      "module_name": "@minecraft/server",
+      "version": "beta"
+    }
+  ]
+}

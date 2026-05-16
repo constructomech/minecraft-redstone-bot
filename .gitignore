@@ -1,0 +1,14 @@
+# Build output
+pack/scripts/
+node_modules/
+*.tsbuildinfo
+
+# Editor / OS noise
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Local env
+.env
+.env.local

@@ -43,9 +43,10 @@ Agent:  → drafts a ContraptionSpec
 
 ## Status
 
-Phase 0. The plan, skills scaffolding, and BDS install automation are
-landing; the behavior pack itself does not exist yet. See [PLAN.md](PLAN.md)
-for the full phased roadmap and exit criteria.
+Phase 1. The behavior pack scaffold and a `/rsforge:hello` sanity-check
+custom command are working end-to-end. The HTTP transport, build/test
+endpoints, and the LLM-driven loop land in subsequent phases. See
+[PLAN.md](PLAN.md) for the full phased roadmap and exit criteria.
 
 ## Requirements
 
@@ -63,23 +64,30 @@ the server side — BDS runs locally.
 
 ## Quick start
 
-> Until the behavior pack ships in Phase 1, this gets you a running
-> Bedrock Dedicated Server. The rest of the loop lands phase-by-phase.
-
 ```pwsh
-# Install the latest Bedrock Dedicated Server to %LOCALAPPDATA%\RedstoneForge\bds\
+# 1. Install the latest Bedrock Dedicated Server.
 pwsh tools/bds-install.ps1
 
-# Boot it
+# 2. Boot once so BDS generates its default world, then stop with 'stop'
+#    at the server prompt or Ctrl+C.
+pwsh tools/bds-run.ps1
+
+# 3. Install build deps and deploy the Redstone Forge behavior pack.
+#    Bundles pack/src -> pack/scripts, copies into BDS, enables on the
+#    world, and flips the Beta APIs experiment on level.dat.
+npm install
+npm run deploy
+
+# 4. Boot again with the pack loaded.
 pwsh tools/bds-run.ps1
 ```
 
-Then in your Bedrock client, add a "Server" with address `127.0.0.1` and
-port `19132` and connect.
+Connect from your Bedrock client to `127.0.0.1:19132` and run
+`/rsforge:hello` — a stone block should appear at your feet+1.
 
-If the download resolution fails (Mojang occasionally moves the endpoint),
-the script falls back through several sources — see the
-[`bds-setup`](.agents/skills/bds-setup/SKILL.md) skill or
+If the BDS download resolution fails (Mojang occasionally moves the
+endpoint), the install script falls back through several sources — see
+the [`bds-setup`](.agents/skills/bds-setup/SKILL.md) skill or
 [`tools/bds-bootstrap.md`](tools/bds-bootstrap.md) for the full fallback
 chain and a manual-URL escape hatch.
 
@@ -89,11 +97,21 @@ chain and a manual-URL escape hatch.
 AGENTS.md                  # operating manual the agent reads every session
 PLAN.md                    # phased roadmap (decisions, deliverables, exits)
 opencode.json              # registers .agents/skills with opencode
+package.json               # build tooling (esbuild) + @minecraft/server types
 .agents/skills/            # skill docs (auto-discovered by opencode and friends)
-pack/                      # (Phase 1+) behavior pack source — TypeScript
-tools/                     # PowerShell + Node helpers; BDS install + CLI
-specs/                     # saved ContraptionSpec JSON
-patterns/                  # (Phase 6) reusable sub-contraptions
+pack/                      # behavior pack source (Phase 1+)
+  ├── manifest.json
+  ├── src/                 # TypeScript source
+  ├── scripts/             # bundled output (gitignored)
+  └── tsconfig.json
+tools/                     # PowerShell + Node helpers
+  ├── bds-install.ps1      # download + install BDS
+  ├── bds-run.ps1          # launch the installed BDS
+  ├── enable-experiments.mjs   # NBT-edit level.dat to enable Beta APIs
+  ├── pack-build.mjs       # esbuild bundle
+  └── pack-deploy.ps1      # copy pack to BDS, enable on world
+specs/                     # saved ContraptionSpec JSON (Phase 3+)
+patterns/                  # reusable sub-contraptions (Phase 6)
 test/                      # host-side unit tests (Node, no Minecraft)
 ```
 

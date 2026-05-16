@@ -222,6 +222,7 @@ if (Test-Path -LiteralPath $propsPath) {
         'allow-cheats' = 'true'
         'online-mode'  = 'false'
         'max-players'  = '4'
+        'content-log-console-output-enabled' = 'true'
     }
     $applied = [System.Collections.Generic.HashSet[string]]::new()
     $lines = Get-Content -LiteralPath $propsPath

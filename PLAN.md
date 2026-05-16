@@ -110,8 +110,7 @@ collaborator who clones it.
 ├── pack/                                  # the behavior pack source (TypeScript)
 │   ├── manifest.json
 │   ├── pack_icon.png
-│   ├── permissions.json                   # net + admin allowlist
-│   ├── config/                            # @minecraft/server-admin variables
+│   ├── config/                            # @minecraft/server-admin variables (Phase 2)
 │   │   ├── default/variables.json
 │   │   └── default/permissions.json
 │   ├── scripts/                           # compiled JS lands here
@@ -131,11 +130,12 @@ collaborator who clones it.
 │   ├── package.json
 │   └── tsconfig.json
 ├── tools/
-│   ├── pack-build.ts                      # bundles src/ → scripts/ via esbuild
-│   ├── pack-deploy.ps1                    # copies pack to BDS development_behavior_packs/
+│   ├── pack-build.mjs                     # bundles pack/src/ → pack/scripts/ via esbuild
+│   ├── pack-deploy.ps1                    # copies pack to BDS, enables on world, ensures experiments
 │   ├── bds-install.ps1                    # downloads + extracts latest BDS, scaffolds a world
 │   ├── bds-run.ps1                        # starts the installed BDS
-│   ├── forge.ts                           # host-side CLI: health, anchor, build, test
+│   ├── enable-experiments.mjs             # flips the gametest (Beta APIs) experiment in level.dat
+│   ├── forge.ts                           # host-side CLI: health, anchor, build, test (Phase 2+)
 │   └── bds-bootstrap.md                   # one-page "install BDS, install pack" guide
 ├── specs/                                 # saved ContraptionSpec JSON examples
 │   └── examples/...
@@ -275,18 +275,36 @@ Deliverables:
 - TypeScript + esbuild build: `tools/pack-build.ts` bundles `src/main.ts` to
   `scripts/main.js`.
 - `tools/pack-deploy.ps1`: copies `pack/` to
-  `%LOCALAPPDATA%\...\bedrockDedicatedServer\development_behavior_packs\redstone-forge\`
-  (exact path confirmed on the user's box during this phase).
-- `pack/permissions.json` granting `@minecraft/server-net` and
-  `@minecraft/server-admin`.
-- `main.ts` registers a custom command `/rsforge:hello` that places a single
-  stone block at the player's feet+1, proving the toolchain end-to-end.
-- Skill: `bedrock-script-api/SKILL.md` — Script API basics, coordinate system,
-  block placement, common pitfalls (tick budget, startup-event registration
-  for custom commands).
+  `%LOCALAPPDATA%\RedstoneForge\bds\<version>\development_behavior_packs\redstone-forge\`
+  and enables it on the world by appending the pack's header UUID to
+  `worlds/<level-name>/world_behavior_packs.json`.
+- `main.ts` registers a custom command `/rsforge:hello` via
+  `system.beforeEvents.startup` → `customCommandRegistry.registerCommand`
+  that places a single stone block at the player's feet+1, proving the
+  toolchain end-to-end. (Custom commands require Script API beta
+  channel; stable 2.7.0 does not include them.)
+- Skill: `bedrock-script-api/SKILL.md` — Script API basics, coordinate
+  system, block placement, custom command registration, common pitfalls
+  (read-only callback contexts, tick budget, beta-vs-stable channel).
 
-Exit criteria: user joins the BDS world, runs `/rsforge:hello`, sees a stone
-block appear.
+Phase 1 does **not** touch the BDS-root `permissions.json`.
+`@minecraft/server` is in the default allowed-modules list. The
+pack-level `permissions.json` we originally planned does not exist in
+current Bedrock spec — modules are declared in `manifest.json`
+`dependencies` and gated by the BDS-root `permissions.json` per pack.
+We grant `@minecraft/server-net` and `@minecraft/server-admin` to our
+pack UUID in Phase 2.
+
+Phase 1 **does** require the Beta APIs (`gametest`) experiment on the
+world, because `CustomCommandRegistry` only exists on the beta channel
+of `@minecraft/server`. `tools/enable-experiments.mjs` flips the NBT
+flag and `pack-deploy.ps1` calls it automatically. See the
+`bds-setup` and `bedrock-script-api` skills for the why.
+
+Exit criteria: user joins the BDS world, runs `/rsforge:hello`, and
+sees a stone block appear at their feet+1. BDS startup log shows
+`[Scripting] [rsforge] startup: registered /rsforge:hello` and
+`Experiment(s) active: gtst`.
 
 ### Phase 2 — Anchor + HTTP transport
 

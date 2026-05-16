@@ -1,0 +1,19 @@
+{
+  "name": "redstone-forge",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Build tooling for the Redstone Forge Bedrock behavior pack.",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "build": "node tools/pack-build.mjs",
+    "deploy": "node tools/pack-build.mjs && pwsh tools/pack-deploy.ps1",
+    "typecheck": "tsc -p pack/tsconfig.json --noEmit"
+  },
+  "devDependencies": {
+    "@minecraft/server": "2.8.0-beta.1.26.21-stable",
+    "esbuild": "^0.23.0",
+    "prismarine-nbt": "^2.5.0",
+    "typescript": "^5.5.0"
+  }
+}

@@ -12,10 +12,11 @@ separate concern (Phase 1).
 
 ## The two scripts
 
-| Script                    | Purpose                                                          |
-| ------------------------- | ---------------------------------------------------------------- |
-| `tools/bds-install.ps1`   | Resolve latest BDS URL, download, extract, patch server.properties |
-| `tools/bds-run.ps1`       | Launch the most-recently-installed BDS                           |
+| Script                          | Purpose                                                          |
+| ------------------------------- | ---------------------------------------------------------------- |
+| `tools/bds-install.ps1`         | Resolve latest BDS URL, download, extract, patch server.properties |
+| `tools/bds-run.ps1`             | Launch the most-recently-installed BDS                           |
+| `tools/enable-experiments.mjs`  | Enable the Beta APIs (gametest) experiment in a world's level.dat |
 
 Default install root: `%LOCALAPPDATA%\RedstoneForge\bds\<version>\`. Each
 BDS version lives in its own subfolder; the ZIP is cached under
@@ -136,18 +137,96 @@ copy it into `<install>/worlds/`, and point `level-name` at it. Or set
 `gamemode=creative` (we do) and fly around the default world — for
 redstone work that's usually enough.
 
+## The Beta APIs experiment
+
+Phase 1+ uses the **beta** channel of `@minecraft/server` because the
+`CustomCommandRegistry` (and most of the current Script API surface)
+lives there. Beta is gated by the **Beta APIs** experiment on the
+world. BDS does **not** expose this as a `server.properties` key — it
+is a flag inside `worlds/<level-name>/level.dat` (NBT-encoded).
+
+Mechanism: the NBT compound `experiments` inside the root compound
+holds the per-experiment booleans. The Beta APIs experiment uses the
+key `gametest` (legacy name; BDS logs it as `gtst` in the
+`Experiment(s) active` line at boot). Two adjacent flags must also be
+true or the runtime treats experiments as never-enabled:
+`experiments_ever_used` and `saved_with_toggled_experiments`.
+
+`tools/enable-experiments.mjs` does this safely:
+
+```
+node tools/enable-experiments.mjs <path-to-level.dat>
+```
+
+It parses level.dat (`prismarine-nbt`, little-endian format), sets the
+three keys to `1`, rewrites the NBT, and updates the 8-byte file
+header (version + payload length). A `.bak` of the original is left
+alongside. The script is idempotent — re-running on an already-enabled
+world prints "experiments already enabled" and exits cleanly.
+
+`tools/pack-deploy.ps1` calls this automatically as part of every
+deploy, so an agent never needs to invoke it directly unless
+diagnosing a problem.
+
+If you see this in the BDS log:
+
+```
+[Scripting] Plugin [Redstone Forge - 0.1.0] - requesting dependency on
+beta APIs [@minecraft/server - 2.8.0-beta], but the Beta APIs
+experiment is not enabled.
+```
+
+It means the experiment isn't on for that world. Fix by running
+`enable-experiments.mjs` against the world's `level.dat` and restart
+BDS.
+
 ## Server-side `permissions.json`
 
-This is BDS's own permissions file at the install root, distinct from the
-**pack-level** `permissions.json` inside our behavior pack folder. The
-server-side file controls which **Script API modules** packs are allowed
-to import. Phase 1 will edit it to grant our pack UUID access to
-`@minecraft/server-net` and `@minecraft/server-admin`. Phase 0 leaves it
-as-shipped.
+This is BDS's own permissions file at the install root. It is the
+mechanism that grants packs (by UUID) access to **restricted Script API
+modules** beyond the default allow-list.
 
-The pack-level file lives in `pack/permissions.json` and is the one that
-declares the pack's required modules. They are separate files with
-different schemas — do not confuse them.
+There is **no pack-level `permissions.json`** in current Bedrock. Packs
+declare what modules they import in their `manifest.json` `dependencies`
+array, and the BDS-root file is what actually gates the restricted ones.
+
+Default allow-list (from `config/default/permissions.json`):
+
+- `@minecraft/server`
+- `@minecraft/server-ui`
+- `@minecraft/server-admin`
+- `@minecraft/server-gametest`
+- `@minecraft/server-editor`
+- `@minecraft/debug-utilities`
+
+**`@minecraft/server-net` is NOT in the default allow-list.** Any pack
+using it must be granted explicitly in the root `permissions.json`.
+
+Phase-by-phase status:
+
+- **Phase 1** (pack skeleton with the `/rsforge:hello` command): uses
+  only `@minecraft/server`. No edits to `permissions.json` needed.
+- **Phase 2** (HTTP transport): pack adds `@minecraft/server-net` (and
+  `@minecraft/server-admin` for secrets/variables). The deploy script
+  must inject a grant for our pack's UUID into the root
+  `permissions.json`. Expected entry shape:
+
+  ```json
+  [
+    {
+      "uuid": "<our pack's data/script module UUID>",
+      "allowed_modules": [
+        "@minecraft/server-net",
+        "@minecraft/server-admin"
+      ]
+    }
+  ]
+  ```
+
+  Whether the UUID needs to be the data module's or the script module's
+  is something to verify on first integration — Mojang has been
+  inconsistent in docs. Start with the script module UUID; if BDS logs
+  reject the pack, switch.
 
 ## Running the server
 
@@ -172,7 +251,7 @@ also works but can leave the world's LevelDB in a recovery state.
 | `Cannot bind to 0.0.0.0:19132`                       | Port in use (often by another BDS instance, the Bedrock client's LAN advertise, or Hyper-V). Change `server-port` in `server.properties` or stop the conflicting process. |
 | `LevelDB error: lock`                                | Two BDS processes opened the same world. Stop all `bedrock_server.exe` instances and try again.              |
 | Client can't see "127.0.0.1" in the Servers list     | Add it manually as a "Server" in the Servers tab with port `19132`. The LAN list only shows in-network ads.  |
-| Behavior pack doesn't load                           | `development_behavior_packs` is enabled in `server.properties`? Pack added to the world's enabled packs? Pack-level `permissions.json` correct? (Phase 1 territory.) |
+| Behavior pack doesn't load                           | Pack added to the world's enabled packs in `worlds/<level-name>/world_behavior_packs.json`? UUIDs match between that file and `pack/manifest.json` (header UUID, not module UUID)? Pack uses restricted modules but missing from BDS-root `permissions.json`? (Phase 1+ territory.) |
 
 ## When the user asks "install the server"
 
