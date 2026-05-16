@@ -180,53 +180,55 @@ It means the experiment isn't on for that world. Fix by running
 `enable-experiments.mjs` against the world's `level.dat` and restart
 BDS.
 
-## Server-side `permissions.json`
+## Server-side `permissions.json` files (two different things!)
 
-This is BDS's own permissions file at the install root. It is the
-mechanism that grants packs (by UUID) access to **restricted Script API
-modules** beyond the default allow-list.
+There are two `permissions.json` files in a BDS install and **they
+have different schemas and purposes**. Mixing them up wedges the pack.
 
-There is **no pack-level `permissions.json`** in current Bedrock. Packs
-declare what modules they import in their `manifest.json` `dependencies`
-array, and the BDS-root file is what actually gates the restricted ones.
+### 1. BDS-root: `<bds>/permissions.json`
 
-Default allow-list (from `config/default/permissions.json`):
+For **player op/member permissions by XUID**. Schema is an array of
+`{xuid, permission}` entries. Defaults to `[]` (no overrides). If you
+write pack-module grant entries here, BDS prints
+`"xuid or permission missing from permissions file: permissions.json"`
+and then denies modules to your pack — including `@minecraft/server`
+that's normally in the default allow-list. **Leave this file as `[]`
+unless you're managing player permissions.**
 
-- `@minecraft/server`
-- `@minecraft/server-ui`
-- `@minecraft/server-admin`
-- `@minecraft/server-gametest`
-- `@minecraft/server-editor`
-- `@minecraft/debug-utilities`
+### 2. Per-pack: `<bds>/config/<pack-uuid>/permissions.json`
 
-**`@minecraft/server-net` is NOT in the default allow-list.** Any pack
-using it must be granted explicitly in the root `permissions.json`.
+For **per-pack Script API module grants**. Schema:
 
-Phase-by-phase status:
-
-- **Phase 1** (pack skeleton with the `/rsforge:hello` command): uses
-  only `@minecraft/server`. No edits to `permissions.json` needed.
-- **Phase 2** (HTTP transport): pack adds `@minecraft/server-net` (and
-  `@minecraft/server-admin` for secrets/variables). The deploy script
-  must inject a grant for our pack's UUID into the root
-  `permissions.json`. Expected entry shape:
-
-  ```json
-  [
-    {
-      "uuid": "<our pack's data/script module UUID>",
-      "allowed_modules": [
-        "@minecraft/server-net",
-        "@minecraft/server-admin"
-      ]
-    }
+```json
+{
+  "allowed_modules": [
+    "@minecraft/server",
+    "@minecraft/server-net",
+    "@minecraft/server-admin"
   ]
-  ```
+}
+```
 
-  Whether the UUID needs to be the data module's or the script module's
-  is something to verify on first integration — Mojang has been
-  inconsistent in docs. Start with the script module UUID; if BDS logs
-  reject the pack, switch.
+If this file does **not** exist for a pack, BDS falls back to the
+shipped default at `<bds>/config/default/permissions.json` which has
+`@minecraft/server`, `-ui`, `-admin`, `-gametest`, `-editor`,
+`debug-utilities` — but **NOT** `@minecraft/server-net`. So any pack
+using net must override.
+
+Writing this file overrides the default entirely — list **every**
+module the pack uses, not just the ones beyond default.
+
+#### Which UUID is "the pack UUID"?
+
+Mojang docs have been inconsistent. Empirically (tested in BDS
+1.26.21.1) BDS finds the config dir keyed by the pack's script-module
+UUID, but `tools/pack-deploy.ps1` writes to both the script-module
+and header-UUID directories to be safe. If one path becomes
+canonical we can simplify later.
+
+The same per-pack config dir also holds `variables.json` (read by
+`@minecraft/server-admin` `variables.get`) and `secrets.json` (read
+by `secrets.get`). All three files share the same per-pack dir.
 
 ## Running the server
 
@@ -248,8 +250,9 @@ also works but can leave the world's LevelDB in a recovery state.
 | ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
 | `403 Forbidden` from the JSON endpoint               | Missing browser UA. The script always sends one — if you see this, the endpoint changed; advance to step 2. |
 | `Windows protected your PC` SmartScreen popup        | First-time run of `bedrock_server.exe`. Click "More info" → "Run anyway." Unsigned-binary warning.            |
-| `Cannot bind to 0.0.0.0:19132`                       | Port in use (often by another BDS instance, the Bedrock client's LAN advertise, or Hyper-V). Change `server-port` in `server.properties` or stop the conflicting process. |
-| `LevelDB error: lock`                                | Two BDS processes opened the same world. Stop all `bedrock_server.exe` instances and try again.              |
+| `Cannot bind to 0.0.0.0:19132` (or any port 19132–19500) | The Bedrock client itself opens a wide UDP socket range — empirically **19132 through ~19500** — for LAN discovery and the Friends/Featured-Servers list whenever the client is running, even though netstat / `Get-NetUDPEndpoint` may show nothing (the bind shows up only as `EADDRINUSE` to other processes). Note this is **not** UWP AppContainer behaviour; the current Bedrock-for-Windows is the MSIX Win32 build. The conflict is just the client claiming many UDP ports for its own use. We default `server-port=25565` / `server-portv6=25566` in `bds-install.ps1` overrides specifically to avoid this. Don't use anything in 191xx-194xx. |
+| Client shows "Multiplayer Connection Failed" / mentions NetherNet | Recent Bedrock clients route the Servers-tab connection attempt through Mojang's NetherNet signalling layer for unified UX, so server-unreachable errors (server not running, wrong port, firewall) surface as NetherNet errors rather than plain "couldn't connect." Check first that BDS is actually running and bound to the port the client is dialling. Loopback isolation is **not** typically involved on the Win32 client — `127.0.0.1:<port>` works. If `127.0.0.1` truly does fail on a specific machine, try the machine's LAN IP (`Get-NetIPAddress -AddressFamily IPv4`). |
+| `LevelDB error: lock`                                | Two `bedrock_server.exe` processes opened the same world. Kill them all and try again. |
 | Client can't see "127.0.0.1" in the Servers list     | Add it manually as a "Server" in the Servers tab with port `19132`. The LAN list only shows in-network ads.  |
 | Behavior pack doesn't load                           | Pack added to the world's enabled packs in `worlds/<level-name>/world_behavior_packs.json`? UUIDs match between that file and `pack/manifest.json` (header UUID, not module UUID)? Pack uses restricted modules but missing from BDS-root `permissions.json`? (Phase 1+ territory.) |
 

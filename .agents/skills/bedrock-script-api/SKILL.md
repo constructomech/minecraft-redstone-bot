@@ -62,8 +62,13 @@ custom slash commands and reach for `system.afterEvents.scriptEventReceive`
 - `entry` is relative to the pack root.
 - A pack with `dependencies` on a restricted module
   (`@minecraft/server-net`, `@minecraft/server-admin`) won't load until
-  the BDS-root `permissions.json` grants those modules to the pack's
-  UUID. See `bds-setup`.
+  the **per-pack** `config/<pack-uuid>/permissions.json` lists those
+  modules in its `allowed_modules` array. See `bds-setup`. Note that
+  writing to BDS-root `permissions.json` is **wrong** — that file is
+  for player op/member permissions by XUID and has a completely
+  different schema; writing pack grants there causes
+  `"xuid or permission missing"` errors and denies even
+  `@minecraft/server`.
 
 ## Custom slash commands
 

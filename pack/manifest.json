@@ -21,6 +21,14 @@
     {
       "module_name": "@minecraft/server",
       "version": "beta"
+    },
+    {
+      "module_name": "@minecraft/server-net",
+      "version": "beta"
+    },
+    {
+      "module_name": "@minecraft/server-admin",
+      "version": "beta"
     }
   ]
 }

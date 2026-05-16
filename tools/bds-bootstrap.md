@@ -11,8 +11,13 @@ pwsh tools/bds-install.ps1   # downloads + extracts latest BDS
 pwsh tools/bds-run.ps1       # boots it
 ```
 
-Connect from your Bedrock client to `127.0.0.1:19132`. The first launch
+Connect from your Bedrock client to `127.0.0.1:25565`. The first launch
 generates a flat creative world named `Bedrock level`.
+
+> The default BDS port is normally 19132, but the Bedrock client itself
+> reserves UDP 19132–19500 for LAN discovery when it's open, blocking
+> BDS from binding any of them. The install script patches
+> `server-port=25565` / `server-portv6=25566` to sidestep this.
 
 ## What the install script does
 
@@ -64,13 +69,22 @@ pwsh tools/bds-install.ps1 -ManualUrl 'https://www.minecraft.net/bedrockdedicate
 - **SmartScreen says "Windows protected your PC"** on first launch of
   `bedrock_server.exe`. Click "More info" → "Run anyway." The binary
   is unsigned but it's the real Mojang BDS.
-- **Port 19132 in use.** Edit `server-port` in
-  `<install-dir>/server.properties` or stop whatever else has it.
-- **LevelDB lock error.** Two `bedrock_server.exe` processes opened the
-  same world. Kill them all and try again.
-- **Client can't see `127.0.0.1` in the LAN list.** Add it manually in
-  the **Servers** tab in your Bedrock client (address `127.0.0.1`,
-  port `19132`).
+- **Port 19132 (or any 191xx) "in use"** even though netstat shows
+  nothing. The Bedrock client reserves UDP 19132–~19500 for itself
+  whenever it's open. Use a port well outside that range (our default
+  is 25565); don't fight it.
+- **Client shows "Multiplayer Connection Failed" / mentions NetherNet.**
+  Recent Bedrock clients route Servers-tab connections through
+  Mojang's NetherNet signalling layer, so "server unreachable" errors
+  (BDS not running, wrong port, firewall) surface as a NetherNet
+  message. Check that BDS is actually running and bound to the port
+  the client is dialling.
+- **LevelDB lock error.** Two `bedrock_server.exe` processes opened
+  the same world. Kill them all and try again.
+- **Client can't see the server in the LAN list.** LAN discovery uses
+  19132 and our BDS is on 25565, so it won't show up automatically.
+  Add it manually in the **Servers** tab: address `127.0.0.1`,
+  port `25565`.
 
 ## Preview channel
 

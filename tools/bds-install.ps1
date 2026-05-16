@@ -223,6 +223,13 @@ if (Test-Path -LiteralPath $propsPath) {
         'online-mode'  = 'false'
         'max-players'  = '4'
         'content-log-console-output-enabled' = 'true'
+        # The Bedrock client itself reserves UDP ports 19132 through
+        # ~19500 via its UWP AppContainer NetworkManifest, blocking any
+        # other process from binding ANY of them whenever the client is
+        # running on the same machine. Picking a port well outside the
+        # range so BDS works without quitting the client first.
+        'server-port'   = '25565'
+        'server-portv6' = '25566'
     }
     $applied = [System.Collections.Generic.HashSet[string]]::new()
     $lines = Get-Content -LiteralPath $propsPath

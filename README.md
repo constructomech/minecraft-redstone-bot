@@ -43,10 +43,13 @@ Agent:  → drafts a ContraptionSpec
 
 ## Status
 
-Phase 1. The behavior pack scaffold and a `/rsforge:hello` sanity-check
-custom command are working end-to-end. The HTTP transport, build/test
-endpoints, and the LLM-driven loop land in subsequent phases. See
-[PLAN.md](PLAN.md) for the full phased roadmap and exit criteria.
+Phase 2. The pack registers `/rsforge:hello`, `/rsforge:anchor`,
+`/rsforge:anchor_clear`, and `/rsforge:anchor_show`, persists the
+anchor via world dynamic properties, and heartbeats its state every
+~2s to a host-side Node daemon (`tools/forge.mjs`). The daemon
+exposes an authenticated HTTP API (`/health`, `/anchor`, `/echo`) for
+the agent and the CLI. The full LLM-driven build loop (Phase 3+) is
+not wired yet. See [PLAN.md](PLAN.md) for the phased roadmap.
 
 ## Requirements
 
@@ -74,16 +77,31 @@ pwsh tools/bds-run.ps1
 
 # 3. Install build deps and deploy the Redstone Forge behavior pack.
 #    Bundles pack/src -> pack/scripts, copies into BDS, enables on the
-#    world, and flips the Beta APIs experiment on level.dat.
+#    world, writes per-pack variables/secrets/permissions, generates a
+#    bearer token in .env, and flips the Beta APIs experiment on
+#    level.dat.
 npm install
 npm run deploy
 
-# 4. Boot again with the pack loaded.
+# 4. Start the forge daemon (it serves the HTTP API on 127.0.0.1:33000).
+node tools/forge.mjs daemon
+
+# 5. In a second terminal, boot the server.
 pwsh tools/bds-run.ps1
+
+# 6. In a third terminal, try the CLI.
+node tools/forge.mjs health
 ```
 
-Connect from your Bedrock client to `127.0.0.1:19132` and run
-`/rsforge:hello` — a stone block should appear at your feet+1.
+Connect from your Bedrock client to `127.0.0.1:25565`. Set an anchor
+with `/rsforge:anchor`. Within 2 seconds, `node tools/forge.mjs anchor`
+on the host shows it.
+
+> Why port 25565 and not the documented 19132? The Bedrock client itself
+> reserves UDP 19132 through ~19500 for LAN discovery and the
+> Friends/Featured-Servers list whenever the client is open, blocking
+> BDS from binding any port in that range. We default BDS to 25565 to
+> sidestep that — `pwsh tools/bds-install.ps1` patches it in.
 
 If the BDS download resolution fails (Mojang occasionally moves the
 endpoint), the install script falls back through several sources — see
@@ -109,7 +127,8 @@ tools/                     # PowerShell + Node helpers
   ├── bds-run.ps1          # launch the installed BDS
   ├── enable-experiments.mjs   # NBT-edit level.dat to enable Beta APIs
   ├── pack-build.mjs       # esbuild bundle
-  └── pack-deploy.ps1      # copy pack to BDS, enable on world
+  ├── pack-deploy.ps1      # copy pack to BDS, enable on world, deploy config + token
+  └── forge.mjs            # daemon + CLI (HTTP broker between agent and pack)
 specs/                     # saved ContraptionSpec JSON (Phase 3+)
 patterns/                  # reusable sub-contraptions (Phase 6)
 test/                      # host-side unit tests (Node, no Minecraft)

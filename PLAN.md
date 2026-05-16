@@ -36,36 +36,54 @@ A future embedded-spec fallback pack (no HTTP) could reuse the same
 ## High-level architecture
 
 ```
-┌──────────────────────┐    HTTP     ┌──────────────────────────────┐
-│ Agent (this repo)    │ ──────────► │ Bedrock Dedicated Server     │
-│  AGENTS.md + skills  │             │   Redstone Forge BP          │
-│  generates spec JSON │ ◄────────── │   @minecraft/server          │
-└──────────────────────┘   results   │   @minecraft/server-net      │
-                                     │   @minecraft/server-admin    │
-                                     └──────────────────────────────┘
-                                                   ▲
-                                                   │ in-game: /rsforge:anchor
-                                                   │ player marks build origin
-                                                   ▼
-                                          Bedrock client (player)
+┌─────────────────┐    HTTP    ┌────────────────────┐    HTTP    ┌─────────────────┐
+│ Agent / CLI     │ ─────────► │ forge daemon       │ ◄────────  │ pack (BDS)      │
+│ tools/forge.mjs │            │ tools/forge.mjs    │  outbound  │ heartbeats /    │
+└─────────────────┘            │ 127.0.0.1:33000    │  only      │ command poll    │
+                               └────────────────────┘            └─────────────────┘
 ```
+
+`@minecraft/server-net` in current Bedrock supports **only outbound**
+HTTP/WebSocket — there is no `HttpServer` / `listen` / `onRequest`
+surface (verified by reading the d.ts of
+`@minecraft/server-net@1.0.0-beta.1.26.21-stable`). So the pack cannot
+be the HTTP server directly. Instead:
+
+- A small **forge daemon** (Node, `tools/forge.mjs`) runs on the host,
+  exposes the HTTP API on `127.0.0.1:33000` for the agent and the CLI,
+  and brokers between agent requests and pack state.
+- The **pack** acts as an outbound HTTP client. It heartbeats its state
+  (anchor, version, etc.) to the daemon and (Phase 3+) long-polls for
+  queued commands.
+- The **agent / CLI** talks to the daemon over HTTP with bearer auth.
+
+The bearer token and daemon endpoint are stored on the pack side via
+`@minecraft/server-admin` (`config/<pack-uuid>/variables.json` and
+`secrets.json`); on the host side they live in `.env`. `pack-deploy.ps1`
+generates the token if missing and writes it to both locations so they
+stay in sync.
 
 Runtime flow:
 
-1. Player joins the BDS world, faces an empty area, runs `/rsforge:anchor`
-   (or hits a marker with a custom item). Pack stores anchor
-   `{dimension, pos, facing}`.
+1. Player joins the BDS world, faces an empty area, runs
+   `/rsforge:anchor` (or hits a marker with a custom item). Pack stores
+   anchor `{dimension, pos, facing}` in a world dynamic property and
+   includes it in the next heartbeat to the forge daemon.
 2. User opens the agent in this directory and says
    *"build me a 4-bit binary adder."*
-3. Agent (driven by `AGENTS.md` + skills) produces a `ContraptionSpec` JSON.
-4. Agent `POST /build` with the spec. Pack snapshots the region (for undo),
-   then places blocks relative to the anchor with rotation applied.
-5. Agent `POST /test` for each declared test case. Pack drives input blocks,
-   runs ticks, reads output blocks, returns pass/fail with observed values.
-6. On failure, agent reads `/world?bounds=...` to diff, edits the spec,
+3. Agent (driven by `AGENTS.md` + skills) produces a `ContraptionSpec`
+   JSON.
+4. Agent `POST /build` to the forge daemon. The daemon queues the
+   command; the pack picks it up on its next long-poll, snapshots the
+   region (for undo), places blocks relative to the anchor with rotation
+   applied, and POSTs the result back.
+5. Agent `POST /test` for each declared test case. Daemon ↔ pack
+   round-trip drives input blocks, runs ticks, reads output blocks,
+   returns pass/fail with observed values.
+6. On failure, agent reads `GET /world?bounds=...` (cached snapshot
+   collected by pack heartbeat), diffs against intent, edits the spec,
    redeploys. Loops up to a configured iteration cap.
-7. User sees a working contraption and can `/rsforge:undo` if they want it
-   gone.
+7. User sees a working contraption and can `/rsforge:undo` in-game.
 
 ## Cross-tool convention: `AGENTS.md` + `.agents/skills/`
 
@@ -306,30 +324,65 @@ sees a stone block appear at their feet+1. BDS startup log shows
 `[Scripting] [rsforge] startup: registered /rsforge:hello` and
 `Experiment(s) active: gtst`.
 
-### Phase 2 — Anchor + HTTP transport
+### Phase 2 — Anchor + outbound HTTP + forge daemon
+
+Architecture note: `@minecraft/server-net` is outbound-only, so the
+pack cannot serve HTTP directly. We split this phase between a
+host-side daemon (the new HTTP API) and the pack's outbound client.
 
 Deliverables:
 
-- `/rsforge:anchor` command: stores `{dimension, pos, facing}` in memory and
-  as a world-dynamic-property so it survives reloads.
-- `/rsforge:anchor clear` and `/rsforge:anchor show` (the latter spawns a
-  particle marker for N seconds).
-- HTTP server on `127.0.0.1:<configured port>` (port via
-  `@minecraft/server-admin` variables, default `33000`). Bearer-token auth;
-  the token is also in admin variables, and the host-side CLI reads it from
-  a local `.env`.
+**Pack side:**
+
+- `/rsforge:anchor` command: stores `{dimension, pos, facing}` in
+  memory and as a world dynamic property so it survives reloads.
+  Sub-commands `clear` and `show` (the latter spawns a particle
+  marker for N seconds).
+- `manifest.json` adds `@minecraft/server-net` and
+  `@minecraft/server-admin` to `dependencies`.
+- `pack/config/<script-module-uuid>/variables.json` (deployed by
+  `pack-deploy.ps1`): the daemon endpoint URL.
+- `pack/config/<script-module-uuid>/secrets.json` (also deployed):
+  the bearer token.
+- Outbound HTTP client (`pack/src/transport.ts`) that POSTs a
+  heartbeat to the daemon every ~2s carrying current anchor +
+  pack version, with the bearer token in an `Authorization` header.
+- Reconnect/retry logic: heartbeat failures are logged and retried;
+  the pack never crashes if the daemon is down.
+
+**Host side:**
+
+- `tools/forge.mjs` daemon mode: HTTP server on `127.0.0.1:33000`
+  (port + token from `.env`). Caches the latest pack heartbeat.
 - Routes:
-  - `GET  /health` → `{ ok: true, anchor: {...} | null }`
-  - `GET  /anchor` → current anchor
-  - `POST /echo`   → trivial round-trip for the agent to test connectivity
-- Skill: `contraption-spec-format/SKILL.md` (stub: just the transport + auth
-  contract for now).
-- Host-side CLI in `tools/forge.ts`: `forge health`, `forge anchor`, used by
-  the agent and for debugging.
+  - `POST /heartbeat` (from pack, bearer-protected): update cache.
+  - `GET  /health` (from agent, bearer-protected): `{ ok, anchor, lastHeartbeat, packVersion }`.
+  - `GET  /anchor` (from agent): current anchor or `null`.
+  - `POST /echo` (from agent): round-trip the body.
+- `tools/forge.mjs` CLI mode: `forge health`, `forge anchor`,
+  `forge echo <message>` — reads `.env` for token + URL, prints the
+  daemon response.
+
+**Plumbing:**
+
+- `pack-deploy.ps1` now also:
+  - Generates a token (random hex) on first deploy, writes it to
+    `.env` (host side) AND `pack/config/<script-uuid>/secrets.json`
+    (pack side), so the same secret is on both ends.
+  - Writes `pack/config/<script-uuid>/variables.json` with the
+    daemon URL (`http://127.0.0.1:33000`).
+  - Patches the BDS-root `permissions.json` to grant our pack's
+    script-module UUID access to `@minecraft/server-net` and
+    `@minecraft/server-admin`.
+- Skill: `contraption-spec-format/SKILL.md` — transport + auth
+  contract (the request/response shape we use). Full spec format
+  comes in Phase 3.
 
 Exit criteria: from this directory,
-`node tools/forge.ts health` reports `{ ok: true, anchor: {...} }` after the
-player has set an anchor in-game.
+`node tools/forge.mjs health` reports
+`{ ok: true, anchor: {...} | null, lastHeartbeat: <iso> }` while BDS
+is running with the pack. Setting/clearing the anchor in-game shows
+up in the next heartbeat within ~2 seconds.
 
 ### Phase 3 — Spec schema + builder
 
