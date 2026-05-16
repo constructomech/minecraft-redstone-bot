@@ -1,0 +1,456 @@
+# Redstone Forge — Plan
+
+A tool that turns natural-language descriptions of Minecraft Bedrock redstone
+contraptions into working in-world builds, driven by an LLM coding agent.
+
+## Architectural decision: HTTP + Bedrock Dedicated Server
+
+We will run a Bedrock Dedicated Server (BDS) locally with a generic
+"Redstone Forge" behavior pack. The agent talks to the pack over HTTP.
+
+Why:
+
+- **`@minecraft/server-net` only works on a Bedrock Dedicated Server.** Any
+  HTTP at all forces dedicated, so the real choice is "HTTP+BDS" vs
+  "no HTTP, addon embeds everything."
+- **The agent needs a tight feedback loop.** Build → test → read world →
+  adjust. Without HTTP the agent must regenerate and re-ship a behavior pack
+  every iteration (write `.mcpack`, reload world, re-run): ~30s per loop.
+  Over HTTP it's ~50ms.
+- **The pack stays generic and reusable.** One pack, many contraptions.
+  Players never repack anything.
+- **Deterministic validation.** The agent can drive inputs and read outputs
+  over HTTP with timeouts, instead of bundling one-shot Script API tests.
+
+Costs we accept:
+
+- The user must install Bedrock Dedicated Server (Windows binary from Mojang)
+  once.
+- `@minecraft/server-net` requires allowlisting in `permissions.json` plus a
+  small admin-config file — boilerplate, but documented.
+- BDS only runs one world; the agent and the player operate on the same world.
+
+A future embedded-spec fallback pack (no HTTP) could reuse the same
+`ContraptionSpec` format, but we are not building that now.
+
+## High-level architecture
+
+```
+┌──────────────────────┐    HTTP     ┌──────────────────────────────┐
+│ Agent (this repo)    │ ──────────► │ Bedrock Dedicated Server     │
+│  AGENTS.md + skills  │             │   Redstone Forge BP          │
+│  generates spec JSON │ ◄────────── │   @minecraft/server          │
+└──────────────────────┘   results   │   @minecraft/server-net      │
+                                     │   @minecraft/server-admin    │
+                                     └──────────────────────────────┘
+                                                   ▲
+                                                   │ in-game: /rsforge:anchor
+                                                   │ player marks build origin
+                                                   ▼
+                                          Bedrock client (player)
+```
+
+Runtime flow:
+
+1. Player joins the BDS world, faces an empty area, runs `/rsforge:anchor`
+   (or hits a marker with a custom item). Pack stores anchor
+   `{dimension, pos, facing}`.
+2. User opens the agent in this directory and says
+   *"build me a 4-bit binary adder."*
+3. Agent (driven by `AGENTS.md` + skills) produces a `ContraptionSpec` JSON.
+4. Agent `POST /build` with the spec. Pack snapshots the region (for undo),
+   then places blocks relative to the anchor with rotation applied.
+5. Agent `POST /test` for each declared test case. Pack drives input blocks,
+   runs ticks, reads output blocks, returns pass/fail with observed values.
+6. On failure, agent reads `/world?bounds=...` to diff, edits the spec,
+   redeploys. Loops up to a configured iteration cap.
+7. User sees a working contraption and can `/rsforge:undo` if they want it
+   gone.
+
+## Cross-tool convention: `AGENTS.md` + `.agents/skills/`
+
+To stay compatible with opencode, VSCode, and GitHub Copilot CLI without
+per-tool config tweaks, instructions live at the conventional paths:
+
+- `AGENTS.md` at the repo root — top-level operating manual.
+- `.agents/skills/<skill-name>/SKILL.md` — discrete skill documents.
+
+opencode does not auto-scan project-local `.agents/skills/` (it auto-scans
+`.opencode/skills/` and `~/.agents/skills/`). We bridge that with a one-line
+`opencode.json` in this repo that registers `.agents/skills` as a skill path.
+The file lives in the repo, so it still counts as "zero edits" for any
+collaborator who clones it.
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "skills": { "paths": [".agents/skills"] }
+}
+```
+
+## Repo layout (target)
+
+```
+.
+├── AGENTS.md                              # top-level operating manual for the agent
+├── PLAN.md                                # this file
+├── README.md                              # user-facing setup + usage
+├── opencode.json                          # registers .agents/skills
+├── .agents/skills/
+│   ├── bds-setup/SKILL.md                 # acquire + install + run Bedrock Dedicated Server
+│   ├── redstone-fundamentals/SKILL.md
+│   ├── bedrock-script-api/SKILL.md
+│   ├── contraption-spec-format/SKILL.md
+│   ├── redstone-components-reference/SKILL.md
+│   ├── designing-contraptions/SKILL.md
+│   ├── building-contraptions/SKILL.md     # the end-to-end workflow
+│   ├── debugging-contraptions/SKILL.md
+│   ├── contraption-testing/SKILL.md
+│   └── pattern-library/SKILL.md
+├── pack/                                  # the behavior pack source (TypeScript)
+│   ├── manifest.json
+│   ├── pack_icon.png
+│   ├── permissions.json                   # net + admin allowlist
+│   ├── config/                            # @minecraft/server-admin variables
+│   │   ├── default/variables.json
+│   │   └── default/permissions.json
+│   ├── scripts/                           # compiled JS lands here
+│   ├── src/
+│   │   ├── main.ts                        # entrypoint, wires modules
+│   │   ├── http/server.ts                 # HTTP listener + routes
+│   │   ├── http/routes/*.ts               # /build, /test, /world, /clear, /anchor
+│   │   ├── world/anchor.ts                # anchor state, custom commands
+│   │   ├── world/builder.ts               # spec → block placements
+│   │   ├── world/transform.ts             # rotation/mirror math
+│   │   ├── world/snapshot.ts              # undo support
+│   │   ├── spec/schema.ts                 # ContraptionSpec types + validator
+│   │   ├── spec/components.ts             # redstone component metadata
+│   │   ├── test/runner.ts                 # input/wait/output engine
+│   │   ├── test/probes.ts                 # readers for lamps/pistons/comparators/observers
+│   │   └── util/log.ts
+│   ├── package.json
+│   └── tsconfig.json
+├── tools/
+│   ├── pack-build.ts                      # bundles src/ → scripts/ via esbuild
+│   ├── pack-deploy.ps1                    # copies pack to BDS development_behavior_packs/
+│   ├── bds-install.ps1                    # downloads + extracts latest BDS, scaffolds a world
+│   ├── bds-run.ps1                        # starts the installed BDS
+│   ├── forge.ts                           # host-side CLI: health, anchor, build, test
+│   └── bds-bootstrap.md                   # one-page "install BDS, install pack" guide
+├── specs/                                 # saved ContraptionSpec JSON examples
+│   └── examples/...
+├── patterns/                              # reusable sub-specs (T flip-flop, clock, etc.)
+│   └── ...
+└── test/                                  # host-side unit tests (Node, no Minecraft)
+    ├── transform.test.ts
+    └── spec-validator.test.ts
+```
+
+## The `ContraptionSpec` data model (core contract)
+
+This is the single most important artifact — it is what the agent emits and
+what the pack consumes. Sketch:
+
+```jsonc
+{
+  "name": "t-flip-flop",
+  "version": 1,
+  "footprint": { "size": [5, 3, 7] },      // local bounding box (x,y,z)
+  "anchor": "player-facing",                // or "absolute"
+  "blocks": [
+    { "at": [0,0,0], "id": "minecraft:lever",     "states": { "lever_direction": "north" } },
+    { "at": [1,0,0], "id": "minecraft:redstone_wire" },
+    { "at": [2,0,0], "id": "minecraft:repeater",  "states": { "direction": 1, "repeater_delay": 0 } }
+    // ...
+  ],
+  "ports": {
+    "inputs":  { "toggle": { "at": [0,0,0], "kind": "lever" } },
+    "outputs": { "q":      { "at": [4,0,0], "kind": "lamp"  } }
+  },
+  "tests": [
+    { "name": "toggle flips q",
+      "steps": [
+        { "set": "toggle", "to": "on"  },
+        { "wait_ticks": 4 },
+        { "expect": { "q": "on"  } },
+        { "set": "toggle", "to": "off" },
+        { "wait_ticks": 4 },
+        { "expect": { "q": "on"  } },     // stays
+        { "set": "toggle", "to": "on"  },
+        { "wait_ticks": 4 },
+        { "expect": { "q": "off" } }
+      ]
+    }
+  ]
+}
+```
+
+Rotation: with `anchor: "player-facing"` the pack rotates the layout so
+`+x local` maps to whatever direction the player was facing when they set
+the anchor. Block states with directionality (repeaters, observers, pistons,
+levers, buttons) get rotated too. This is where `world/transform.ts` earns
+its keep, and where most of our host-side unit tests live.
+
+## Phased plan
+
+### Phase 0 — Decisions & scaffolding (small)
+
+Deliverables:
+
+- This `PLAN.md` committed (done).
+- `README.md` with one-paragraph project summary and a pointer to
+  `tools/bds-bootstrap.md`.
+- `AGENTS.md` with the project's north star and hard rules
+  (e.g. "do not invent block IDs; emit only IDs listed in
+  `pack/src/spec/components.ts`").
+- `opencode.json` registering `.agents/skills`.
+- `.agents/skills/<name>/SKILL.md` stubs (frontmatter only) for every skill
+  named in the layout above.
+- **BDS acquisition + install automation.** The agent should be able to set
+  up a working server from scratch without the user fishing around on
+  minecraft.net:
+  - `tools/bds-install.ps1` resolves the latest BDS download. The preferred
+    path is the JSON endpoint
+    `https://net-secondary.web.minecraft-services.net/api/v1.0/download/links`
+    (the same one the official download page calls): pick the
+    `serverBedrockWindows` (or `serverBedrockLinux`) entry and grab its
+    `downloadUrl`. The User-Agent header must look like a real browser or
+    the endpoint 403s.
+
+    Because that endpoint isn't a contractual public API and Mojang has
+    moved it before, the script implements a **fallback chain** and the
+    `bds-setup` skill documents the same chain so the agent can recover
+    when the script fails:
+
+    1. JSON endpoint above.
+    2. Scrape `https://www.minecraft.net/en-us/download/server/bedrock`
+       for the first `https://www.minecraft.net/bedrockdedicatedserver/...zip`
+       link.
+    3. Try the `minecraft-wiki`-tracked archive list
+       (`https://minecraft.wiki/w/Bedrock_Dedicated_Server`) which usually
+       lists the current version and direct link.
+    4. As a last resort, the script and the skill both prompt the user to
+       paste a download URL manually. The agent should ask the user before
+       guessing.
+
+    Each step records *which* source succeeded so we can tell when the
+    primary path breaks.
+  - Script downloads the ZIP to a cache dir, verifies the size, extracts to
+    a user-chosen install dir (default
+    `%LOCALAPPDATA%\RedstoneForge\bds\<version>\`), and writes a small
+    `version.txt` so subsequent runs can detect upgrades.
+  - It then templates a `server.properties` (creative mode, flat world,
+    `allow-cheats=true`, `online-mode=false` for local-only use, fixed
+    seed) and patches `permissions.json` to grant
+    `@minecraft/server-net` and `@minecraft/server-admin` to our pack UUID.
+  - `tools/bds-run.ps1` launches the installed server, attached so logs go
+    to the terminal.
+  - First-run UX: the user runs one command
+    (`pwsh tools/bds-install.ps1`) and then `pwsh tools/bds-run.ps1`. The
+    agent can perform both itself when asked to "set up the server".
+- Skill: `bds-setup/SKILL.md` — how the agent acquires the latest BDS, the
+  download-URL endpoint above, license/EULA acknowledgment requirements,
+  required `permissions.json` entries, how to detect an existing install
+  and upgrade it, troubleshooting (Windows Defender / SmartScreen, port
+  conflicts, the `LevelDB` lock when two servers race for the same world).
+- `tools/bds-bootstrap.md` becomes a human-readable mirror of the
+  `bds-setup` skill: same content, written for a person reading it without
+  the agent.
+
+Exit criteria: opencode starts in this directory, lists the new skills, and
+`AGENTS.md` loads. Running `pwsh tools/bds-install.ps1` produces a working
+BDS install in the chosen directory; `pwsh tools/bds-run.ps1` boots it.
+No in-game behavior from our pack yet.
+
+### Phase 1 — Behavior pack skeleton ("hello block")
+
+Deliverables:
+
+- `pack/manifest.json` declaring `script` plus a `header` UUID and module
+  UUIDs, with dependencies on `@minecraft/server` and `@minecraft/server-net`.
+- TypeScript + esbuild build: `tools/pack-build.ts` bundles `src/main.ts` to
+  `scripts/main.js`.
+- `tools/pack-deploy.ps1`: copies `pack/` to
+  `%LOCALAPPDATA%\...\bedrockDedicatedServer\development_behavior_packs\redstone-forge\`
+  (exact path confirmed on the user's box during this phase).
+- `pack/permissions.json` granting `@minecraft/server-net` and
+  `@minecraft/server-admin`.
+- `main.ts` registers a custom command `/rsforge:hello` that places a single
+  stone block at the player's feet+1, proving the toolchain end-to-end.
+- Skill: `bedrock-script-api/SKILL.md` — Script API basics, coordinate system,
+  block placement, common pitfalls (tick budget, startup-event registration
+  for custom commands).
+
+Exit criteria: user joins the BDS world, runs `/rsforge:hello`, sees a stone
+block appear.
+
+### Phase 2 — Anchor + HTTP transport
+
+Deliverables:
+
+- `/rsforge:anchor` command: stores `{dimension, pos, facing}` in memory and
+  as a world-dynamic-property so it survives reloads.
+- `/rsforge:anchor clear` and `/rsforge:anchor show` (the latter spawns a
+  particle marker for N seconds).
+- HTTP server on `127.0.0.1:<configured port>` (port via
+  `@minecraft/server-admin` variables, default `33000`). Bearer-token auth;
+  the token is also in admin variables, and the host-side CLI reads it from
+  a local `.env`.
+- Routes:
+  - `GET  /health` → `{ ok: true, anchor: {...} | null }`
+  - `GET  /anchor` → current anchor
+  - `POST /echo`   → trivial round-trip for the agent to test connectivity
+- Skill: `contraption-spec-format/SKILL.md` (stub: just the transport + auth
+  contract for now).
+- Host-side CLI in `tools/forge.ts`: `forge health`, `forge anchor`, used by
+  the agent and for debugging.
+
+Exit criteria: from this directory,
+`node tools/forge.ts health` reports `{ ok: true, anchor: {...} }` after the
+player has set an anchor in-game.
+
+### Phase 3 — Spec schema + builder
+
+Deliverables:
+
+- `spec/schema.ts`: strict TypeScript types and a runtime validator (zod or
+  hand-rolled) for `ContraptionSpec`.
+- `world/transform.ts`: rotation/mirror math for positions AND for state
+  values of directional blocks (repeater `direction`, observer
+  `facing_direction`, piston `facing_direction`, lever `lever_direction`,
+  button `facing_direction`, etc.). Pure functions, unit-tested in
+  `test/transform.test.ts` without Minecraft.
+- `spec/components.ts`: authoritative table of supported redstone block IDs
+  and the state keys we expose, with allowed values. The agent MUST emit only
+  IDs from this table.
+- `world/builder.ts`: takes `(spec, anchor)` → list of
+  `(absPos, BlockPermutation)` placements; applies them via
+  `Dimension.setBlock` and `Dimension.setBlockPermutation`.
+- `world/snapshot.ts`: before a build, record every block in the footprint so
+  `/rsforge:undo` can restore it.
+- Route: `POST /build` body = `{ spec, dryRun?: boolean }`. Returns
+  `{ jobId, placed, snapshotId }`.
+- Route: `POST /undo` body = `{ jobId? }` (defaults to latest) → restores
+  the snapshot for that job.
+- Route: `POST /redo` body = `{ jobId? }` → replays the build that was
+  most recently undone.
+- In-game slash commands wired to the same handlers:
+  - `/rsforge:undo [jobId]` — undoes the last build, or a named job.
+  - `/rsforge:redo [jobId]` — re-applies the most recently undone build.
+  - `/rsforge:history` — lists recent jobs (id, name, footprint, status).
+  These exist in Phase 3 because the user will want to back out of a bad
+  build immediately, before any of the polish work in Phase 7.
+- Skill: `redstone-components-reference/SKILL.md` — the curated table plus
+  diagrams for each component (powering rules, facing semantics, common
+  gotchas).
+- Skill: `contraption-spec-format/SKILL.md` filled out with the full schema,
+  examples, and the rotation rules.
+
+Exit criteria: agent posts a hand-written 3-block spec
+(lever → wire → lamp), it appears correctly oriented, `undo` removes it.
+
+### Phase 4 — Test engine
+
+Deliverables:
+
+- `test/probes.ts`: readers for each output kind — lamp on/off
+  (`redstone_lamp` vs `lit_redstone_lamp`), piston extension (check the head
+  block at the facing offset), comparator `output_signal` analog, observer
+  pulse (sample over a window).
+- `test/runner.ts`: executes a test's steps using `system.runTimeout` for
+  `wait_ticks`. For `set` actions: lever toggles via state mutation; button
+  "press" via brief redstone-block placement; redstone-block toggles for
+  analog inputs.
+- Route: `POST /test` body = `{ specRef | spec, testName?: string }` →
+  `{ results: [{ name, pass, observed, expected, error? }] }`.
+- Route: `GET /world?bounds=[x1,y1,z1,x2,y2,z2]` → compact RLE-ish dump of
+  block IDs plus key states, capped at a size limit. Used for debugging diffs.
+- Skill: `contraption-testing/SKILL.md` — how to phrase `tests`, why we wait
+  N ticks, how to detect race conditions.
+
+Exit criteria: a saved spec for "AND gate" passes its declared tests via
+`POST /test`, and a deliberately broken spec fails with the right `observed`
+values.
+
+### Phase 5 — Agent operating loop
+
+Deliverables:
+
+- `AGENTS.md` fully populated, with the canonical loop:
+  1. Read the user request.
+  2. Check the pattern library (`patterns/`) for a match or near-match.
+  3. Draft a `ContraptionSpec` using only IDs from
+     `pack/src/spec/components.ts`.
+  4. Validate the spec locally
+     (`node tools/forge.ts validate <spec>.json`).
+  5. `POST /build` with `dryRun: true` first if the footprint exceeds
+     a configured block-count threshold.
+  6. `POST /test`. If all pass: stop. If not: read diff via
+     `GET /world`, refine, redeploy, capped at K iterations.
+  7. Report to the user with the final spec saved under `specs/`.
+- Skill: `designing-contraptions/SKILL.md` — decomposition heuristics:
+  inputs, outputs, logic; pick a topology (combinational vs sequential vs
+  timed); choose orientation.
+- Skill: `building-contraptions/SKILL.md` — the operating loop, self-prompts,
+  when to give up and ask the user.
+- Skill: `debugging-contraptions/SKILL.md` — how to read a failing test,
+  common failure modes (wire crossings, repeater direction wrong, timing too
+  tight), what to ask the player.
+- Skill: `redstone-fundamentals/SKILL.md` — the actual redstone knowledge:
+  signal strength, 15-block decay, repeater locking, observer behavior,
+  piston rules, BUD, tile-tick ordering at a level the agent can reason from.
+
+Exit criteria: from a clean session, the prompt *"build a 2-input XOR with
+two lever inputs on the south face and a lamp output on the north face"*
+produces a working contraption with passing tests in ≤3 build iterations.
+
+### Phase 6 — Pattern library
+
+Deliverables:
+
+- `patterns/` populated with vetted sub-specs: T flip-flop, RS latch,
+  D latch, 1-tick clock, slow clock, edge detector, half/full adder, 4-bit
+  adder, decoder, 7-seg driver, basic memory cell.
+- Spec format supports `"includes": ["patterns/t-flip-flop.json"]` with a
+  local origin offset, so the agent can compose patterns into larger builds.
+- Skill: `pattern-library/SKILL.md` — index of patterns, ports/footprints,
+  when to pick which.
+
+Exit criteria: agent answers *"build a counter that increments on a button
+press"* by composing `edge-detector` + `4-bit-adder` + memory cells from the
+library.
+
+### Phase 7 — UX polish
+
+Deliverables:
+
+- `/rsforge:remove <name>` (named-build removal, beyond the
+  `/rsforge:undo` / `/rsforge:redo` / `/rsforge:history` trio that shipped
+  in Phase 3).
+- Per-build job IDs surfaced more prominently to the player
+  ("Built `t-flip-flop` (job 7), `/rsforge:undo 7` to remove").
+- Footprint preview: glass or structure-void outline drawn for N seconds
+  before placement.
+- Optional: a custom "anchor wand" item registered via the pack so the
+  player can right-click to set the anchor instead of typing the command.
+- `README.md` and `tools/bds-bootstrap.md` finalized; optional 60-second
+  screen-recording walkthrough referenced from the README.
+
+Exit criteria: a new user can go from "I have Minecraft Bedrock installed"
+to "I built a working contraption from an LLM prompt" in under 15 minutes by
+following the README.
+
+## Open questions before we start
+
+1. **Pack tooling:** esbuild bundling, or Mojang's recommended Webpack
+   template? Default: esbuild for speed and simplicity.
+2. **Scope of supported blocks:** start with the core 12 (wire, repeater,
+   comparator, lever, button, pressure plate, observer, piston, sticky
+   piston, redstone block, redstone torch, redstone lamp) plus solid filler
+   blocks? Or aim wider day-one? Default: core 12 + filler.
+3. **Validation strictness:** should `/build` reject a spec containing block
+   IDs not in our components table, or warn? Default: reject.
+4. **Multi-player:** assume single-player BDS for now (one anchor) or
+   namespace anchors per player from day one? Default: one anchor.
+
+If these defaults are acceptable, Phase 0 kicks off next.
