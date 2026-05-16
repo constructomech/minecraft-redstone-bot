@@ -239,10 +239,14 @@ Deliverables:
     a user-chosen install dir (default
     `%LOCALAPPDATA%\RedstoneForge\bds\<version>\`), and writes a small
     `version.txt` so subsequent runs can detect upgrades.
-  - It then templates a `server.properties` (creative mode, flat world,
-    `allow-cheats=true`, `online-mode=false` for local-only use, fixed
-    seed) and patches `permissions.json` to grant
-    `@minecraft/server-net` and `@minecraft/server-admin` to our pack UUID.
+  - It then patches `server.properties` for a creative-mode dev
+    experience (`gamemode=creative`, `difficulty=peaceful`,
+    `allow-cheats=true`, `online-mode=false`, `max-players=4`,
+    `server-name=Redstone Forge Dev`). Note: Bedrock has no
+    `level-type` / generator key in `server.properties` (that's
+    Java-only), so we don't try to set one — the world generator is
+    fixed at world-creation time. BDS-level `permissions.json` is
+    edited in Phase 1 once we have a pack UUID.
   - `tools/bds-run.ps1` launches the installed server, attached so logs go
     to the terminal.
   - First-run UX: the user runs one command
