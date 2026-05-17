@@ -1,16 +1,25 @@
 /**
- * Job store: tracks builds the pack has executed so /undo can find the
- * snapshot. In-memory for Phase 3; lost on world reload (acceptable
- * tradeoff — Phase 7 polish can persist via dynamic properties).
+ * Job store: tracks builds the pack has executed so /undo + /test can
+ * find the snapshot, spec, and anchor. In-memory; lost on world
+ * reload (acceptable for Phase 4b; persistence is Phase 7 polish).
  */
-import type { Snapshot } from "./world/snapshot.js";
 import type { Vector3 } from "@minecraft/server";
+import type { Anchor } from "./anchor.js";
+import type { ContraptionSpec } from "./spec/schema.js";
+import type { RotationStep } from "./world/transform.js";
+import type { Snapshot } from "./world/snapshot.js";
 
 export type JobStatus = "completed" | "undone";
 
 export type Job = {
   readonly id: string;
   readonly name: string;
+  /** The original spec — needed so /test can find ports + tests. */
+  readonly spec: ContraptionSpec;
+  /** Anchor at build time. Ports resolve relative to this. */
+  readonly anchor: Anchor;
+  /** Rotation applied during build. Ports rotate by the same amount. */
+  readonly rotationSteps: RotationStep;
   readonly snapshot: Snapshot;
   readonly bounds: { readonly min: Vector3; readonly max: Vector3 };
   readonly placed: number;
@@ -19,7 +28,7 @@ export type Job = {
 };
 
 const jobs = new Map<string, Job>();
-const order: string[] = []; // chronological insertion order, for "latest"
+const order: string[] = []; // chronological insertion order
 
 export function recordJob(job: Job): void {
   jobs.set(job.id, job);
@@ -35,6 +44,15 @@ export function latestUndoable(): Job | undefined {
   for (let i = order.length - 1; i >= 0; i--) {
     const j = jobs.get(order[i]!);
     if (j && j.status === "completed") return j;
+  }
+  return undefined;
+}
+
+/** Most recent completed job, regardless of status — for /test default. */
+export function latest(): Job | undefined {
+  for (let i = order.length - 1; i >= 0; i--) {
+    const j = jobs.get(order[i]!);
+    if (j) return j;
   }
   return undefined;
 }

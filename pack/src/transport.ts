@@ -146,7 +146,7 @@ async function pollOnce(endpoint: string, token: SecretString): Promise<void> {
 
   const commands = body.commands ?? [];
   for (const cmd of commands) {
-    const result = dispatch(cmd);
+    const result = await dispatch(cmd);
     await postResult(endpoint, token, cmd.jobId, result);
   }
 }

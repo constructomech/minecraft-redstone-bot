@@ -1,6 +1,6 @@
 {
   "name": "lever-wire-lamp",
-  "version": 2,
+  "version": 3,
   "footprint": { "size": [3, 1, 1] },
   "anchor": "player-facing",
   "blocks": [
@@ -11,5 +11,25 @@
     },
     { "at": [1, 0, 0], "id": "minecraft:redstone_wire" },
     { "at": [2, 0, 0], "id": "minecraft:redstone_lamp" }
+  ],
+  "ports": {
+    "inputs":  { "a":   { "at": [0, 0, 0], "kind": "lever" } },
+    "outputs": { "out": { "at": [2, 0, 0], "kind": "lamp"  } }
+  },
+  "tests": [
+    {
+      "name": "lever passthrough",
+      "steps": [
+        { "set": { "a": "off" } },
+        { "wait_ticks": 4 },
+        { "expect": { "out": "off" } },
+        { "set": { "a": "on" } },
+        { "wait_ticks": 4 },
+        { "expect": { "out": "on" } },
+        { "set": { "a": "off" } },
+        { "wait_ticks": 4 },
+        { "expect": { "out": "off" } }
+      ]
+    }
   ]
 }

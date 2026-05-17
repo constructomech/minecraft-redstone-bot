@@ -1,29 +1,34 @@
 /**
  * Command dispatcher: invoked by the pack's poll loop once it picks up
  * a command from the daemon. Routes by `cmd.type` to the right handler
- * (build, undo, ...), catches errors, and returns a structured result
- * the dispatcher posts back to the daemon.
+ * (build, undo, test), catches errors, returns a structured result the
+ * dispatcher posts back to the daemon.
+ *
+ * Async since /test uses system.runTimeout between steps.
  */
 import { world } from "@minecraft/server";
 import { getAnchor } from "./anchor.js";
-import { recordJob, getJob, latestUndoable } from "./jobs.js";
+import { getJob, latest, latestUndoable, recordJob } from "./jobs.js";
 import { validateSpec } from "./spec/schema.js";
+import { runAllTests, runTest } from "./test/runner.js";
 import { executeBuild } from "./world/builder.js";
 import { restoreSnapshot } from "./world/snapshot.js";
 
 export type Command =
   | { jobId: string; type: "build"; payload: { spec: unknown } }
-  | { jobId: string; type: "undo";  payload: { jobId?: string } };
+  | { jobId: string; type: "undo";  payload: { jobId?: string } }
+  | { jobId: string; type: "test";  payload: { jobId?: string; testName?: string } };
 
 export type CommandResult =
   | { ok: true; data: unknown }
   | { ok: false; error: string; errors?: unknown };
 
-export function dispatch(cmd: Command): CommandResult {
+export async function dispatch(cmd: Command): Promise<CommandResult> {
   try {
     switch (cmd.type) {
       case "build": return handleBuild(cmd.payload, cmd.jobId);
       case "undo":  return handleUndo(cmd.payload);
+      case "test":  return await handleTest(cmd.payload);
       default: {
         const t = (cmd as { type?: unknown }).type;
         return { ok: false, error: `unknown command type: ${String(t)}` };
@@ -33,6 +38,8 @@ export function dispatch(cmd: Command): CommandResult {
     return { ok: false, error: `unhandled exception: ${String(err)}` };
   }
 }
+
+// ---------- build ----------
 
 function handleBuild(payload: { spec: unknown }, jobId: string): CommandResult {
   const v = validateSpec(payload.spec);
@@ -59,6 +66,9 @@ function handleBuild(payload: { spec: unknown }, jobId: string): CommandResult {
   recordJob({
     id: jobId,
     name: spec.name,
+    spec,
+    anchor,
+    rotationSteps: result.rotationSteps,
     snapshot: result.snapshot,
     bounds: result.bounds,
     placed: result.placed,
@@ -67,7 +77,7 @@ function handleBuild(payload: { spec: unknown }, jobId: string): CommandResult {
   });
 
   console.log(
-    `[rsforge] build ${jobId} '${spec.name}': placed ${result.placed} blocks bounds=${JSON.stringify(result.bounds)}`,
+    `[rsforge] build ${jobId} '${spec.name}': placed ${result.placed} blocks rotation=${result.rotationSteps} bounds=${JSON.stringify(result.bounds)}`,
   );
 
   return {
@@ -81,6 +91,8 @@ function handleBuild(payload: { spec: unknown }, jobId: string): CommandResult {
     },
   };
 }
+
+// ---------- undo ----------
 
 function handleUndo(payload: { jobId?: string }): CommandResult {
   const job = payload.jobId ? getJob(payload.jobId) : latestUndoable();
@@ -106,4 +118,64 @@ function handleUndo(payload: { jobId?: string }): CommandResult {
     ok: true,
     data: { jobId: job.id, name: job.name, restored },
   };
+}
+
+// ---------- test ----------
+
+async function handleTest(payload: { jobId?: string; testName?: string }): Promise<CommandResult> {
+  const job = payload.jobId ? getJob(payload.jobId) : latest();
+  if (!job) {
+    return {
+      ok: false,
+      error: payload.jobId
+        ? `no job with id '${payload.jobId}'`
+        : "no job recorded yet — build a spec first",
+    };
+  }
+  if (job.status === "undone") {
+    return {
+      ok: false,
+      error: `job '${job.id}' has been undone; rebuild before testing`,
+    };
+  }
+
+  const tests = job.spec.tests ?? [];
+  if (tests.length === 0) {
+    return {
+      ok: false,
+      error: `job '${job.id}' (${job.name}) has no tests declared in its spec`,
+    };
+  }
+
+  let results;
+  if (payload.testName !== undefined) {
+    const t = tests.find((x) => x.name === payload.testName);
+    if (!t) {
+      return {
+        ok: false,
+        error: `no test named '${payload.testName}' (available: ${tests.map((x) => x.name).join(", ")})`,
+      };
+    }
+    results = [await runTest(t, job)];
+  } else {
+    results = await runAllTests(job);
+  }
+
+  const passed = results.filter((r) => r.pass).length;
+  const failed = results.length - passed;
+  console.log(
+    `[rsforge] test ${job.id} '${job.name}': ${passed}/${results.length} passed`,
+  );
+
+  return {
+    ok: failed === 0,
+    data: {
+      jobId: job.id,
+      name: job.name,
+      passed,
+      failed,
+      results,
+    },
+    ...(failed > 0 ? { error: `${failed} of ${results.length} tests failed` } : {}),
+  } as CommandResult;
 }

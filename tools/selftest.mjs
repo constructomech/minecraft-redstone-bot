@@ -355,6 +355,175 @@ try {
     }
   }
 
+  // ---------- Phase 4b: /test runs declared tests against a built job ----------
+
+  console.log("\nVerifying /test runs declared tests against a built job...");
+
+  // Anchor at (4, 70, 4) facing east (identity rotation for simpler math).
+  bds.send("scriptevent rsforge:debug_setanchor 4 70 4 east");
+  await bds.waitForLog(
+    /debug_setanchor: \S+ 4 70 4 east/,
+    { timeoutMs: 5000, fromIndex: bds.log.length },
+  );
+  await pollHealth({ timeoutMs: 6000, predicate: (h) => h.anchor && h.anchor.facing === "east" });
+
+  // Reapply the support pad — earlier undos may have replaced stone with air.
+  for (const cell of padCells) bds.send(`setblock ${cell} stone`);
+  for (const x of [4, 5, 6]) bds.send(`setblock ${x} 70 4 air`);
+  await new Promise((r) => setTimeout(r, 400));
+
+  // Minimal self-supporting spec: a single redstone_wire whose signal
+  // we read directly. Avoids both the lamp transition bug AND wire-on-
+  // wire weirdness (when two wires are adjacent, one of them seems to
+  // get destroyed by Bedrock's update path — possibly the same root
+  // cause as the lamp transition issue).
+  const harnessSpec = {
+    name: "selftest-passthrough",
+    footprint: { size: [2, 2, 1] },
+    anchor: "absolute",
+    blocks: [
+      // Foundation row at y=0.
+      { at: [0, 0, 0], id: "minecraft:stone" },
+      { at: [1, 0, 0], id: "minecraft:stone" },
+      // Circuit row at y=1: input source, then a single wire we read.
+      { at: [0, 1, 0], id: "minecraft:redstone_block" },
+      { at: [1, 1, 0], id: "minecraft:redstone_wire" },
+    ],
+    ports: {
+      inputs:  { a:   { at: [0, 1, 0], kind: "redstone_block" } },
+      outputs: { out: { at: [1, 1, 0], kind: "wire" } },
+    },
+    tests: [
+      {
+        name: "redstone-block passthrough",
+        steps: [
+          { set: { a: "off" } },
+          { wait_ticks: 4 },
+          { expect: { out: "off" } },
+          { set: { a: "on" } },
+          { wait_ticks: 4 },
+          { expect: { out: "on" } },
+        ],
+      },
+    ],
+  };
+
+  // Clear the entire 2-layer build site (y=70 foundation, y=71 circuit)
+  // so the build starts from a known-air state.
+  for (let y = 70; y <= 71; y++) {
+    for (let x = 4; x <= 6; x++) bds.send(`setblock ${x} ${y} 4 air`);
+  }
+  await new Promise((r) => setTimeout(r, 400));
+
+  const exBuild = await callJson("POST", "/build", { spec: harnessSpec });
+  if (!exBuild.ok || exBuild.data?.placed !== 4) {
+    fail("build harness spec", JSON.stringify(exBuild));
+    throw new Error("aborting /test checks");
+  }
+  pass(`built harness spec (jobId=${exBuild.data.jobId.slice(0, 8)}...)`);
+
+  // Default /test (no body) runs all declared tests on the most recent job.
+  const exTest = await callJson("POST", "/test", {});
+
+  if (!exTest.ok) {
+    // Diagnostic: dump the world at the build site so we know whether
+    // the issue is in placement, propagation, or the probe.
+    console.log("    \x1b[90m--- post-test diagnostic ---\x1b[0m");
+    for (const [x, y, z, label] of [
+      [4, 70, 4, "foundation_a"], [5, 70, 4, "foundation_b"],
+      [4, 71, 4, "input       "], [5, 71, 4, "wire (output)"],
+    ]) {
+      const cursor = bds.log.length;
+      bds.send(`scriptevent rsforge:debug_blockat ${x} ${y} ${z}`);
+      try {
+        const m = await bds.waitForLog(/debug_blockat: \S+ -> (\S+) (\{[^}]*\})/, { timeoutMs: 3000, fromIndex: cursor });
+        console.log(`    \x1b[90m${label} @ ${x},${y},${z}: ${m[1]} ${m[2]}\x1b[0m`);
+      } catch {
+        console.log(`    \x1b[90m${label}: probe timeout\x1b[0m`);
+      }
+    }
+  }
+
+  const r0 = exTest.data?.results?.[0];
+  if (exTest.ok && exTest.data?.passed === 1 && exTest.data?.failed === 0 && r0?.pass === true) {
+    pass(`/test passed ${exTest.data.passed}/${exTest.data.results.length} (stepCount=${r0.stepCount})`);
+  } else {
+    fail("/test on harness spec", JSON.stringify(exTest, null, 2));
+  }
+
+  // Named test that exists.
+  const namedTest = await callJson("POST", "/test", { testName: "redstone-block passthrough" });
+  if (namedTest.ok && namedTest.data?.results?.length === 1) {
+    pass("/test with valid testName returns just that test");
+  } else {
+    fail("named test", JSON.stringify(namedTest));
+  }
+
+  // ---------- /test rejection paths ----------
+
+  console.log("\nVerifying /test rejection paths...");
+
+  const bogusJob = await callJson("POST", "/test", { jobId: "definitely-not-a-job" });
+  if (bogusJob.ok === false && /no job/.test(bogusJob.error ?? "")) {
+    pass("/test with bogus jobId returns descriptive error");
+  } else {
+    fail("bogus jobId", JSON.stringify(bogusJob));
+  }
+
+  const badName = await callJson("POST", "/test", { testName: "not-a-real-test" });
+  if (badName.ok === false && /no test named/.test(badName.error ?? "")) {
+    pass("/test with unknown testName returns descriptive error");
+  } else {
+    fail("bad testName", JSON.stringify(badName));
+  }
+
+  // Undo, then /test should refuse against the now-undone job.
+  await callJson("POST", "/undo", {});
+  await new Promise((r) => setTimeout(r, 200));
+  const afterUndo = await callJson("POST", "/test", {});
+  if (afterUndo.ok === false && /undone/.test(afterUndo.error ?? "")) {
+    pass("/test on undone job returns descriptive error");
+  } else {
+    fail("test after undo", JSON.stringify(afterUndo));
+  }
+
+  // Build a spec with NO tests, then /test should refuse cleanly.
+  for (const cell of padCells) bds.send(`setblock ${cell} stone`);
+  for (const x of [4, 5, 6]) bds.send(`setblock ${x} 70 4 air`);
+  await new Promise((r) => setTimeout(r, 300));
+  const noTestsSpec = {
+    name: "no-tests-here",
+    footprint: { size: [1, 1, 1] },
+    anchor: "absolute",
+    blocks: [{ at: [0, 0, 0], id: "minecraft:stone" }],
+  };
+  await callJson("POST", "/build", { spec: noTestsSpec });
+  const noTestsResp = await callJson("POST", "/test", {});
+  if (noTestsResp.ok === false && /no tests/.test(noTestsResp.error ?? "")) {
+    pass("/test on spec with no tests returns descriptive error");
+  } else {
+    fail("spec without tests", JSON.stringify(noTestsResp));
+  }
+  await callJson("POST", "/undo", {});
+
+  // ---------- Validate that the on-disk example spec parses + builds ----------
+
+  console.log("\nVerifying the on-disk example spec is at least valid + buildable...");
+  for (const cell of padCells) bds.send(`setblock ${cell} stone`);
+  for (const x of [4, 5, 6]) bds.send(`setblock ${x} 70 4 air`);
+  await new Promise((r) => setTimeout(r, 300));
+
+  const examplePath = path.join(repoRoot, "specs/examples/lever-wire-lamp.json");
+  const exampleSpec = JSON.parse(await readFile(examplePath, "utf8"));
+  const exampleBuild = await callJson("POST", "/build", { spec: exampleSpec });
+  if (exampleBuild.ok && exampleBuild.data?.placed === 3) {
+    pass(`example spec from disk builds (jobId=${exampleBuild.data.jobId.slice(0, 8)}...)`);
+    diag("(its 'lever passthrough' test isn't run here — levers placed in mid-air get dropped by physics within a few ticks; works fine when a real player runs 'forge test' on grass)");
+  } else {
+    fail("example spec build", JSON.stringify(exampleBuild));
+  }
+  await callJson("POST", "/undo", {});
+
   // ---------- validation rejection ----------
 
   console.log("\nVerifying spec validation rejects garbage...");

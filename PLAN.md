@@ -527,44 +527,89 @@ Exit criteria: same 3-block lever→wire→lamp spec, built at all 4
 cardinal facings, places its blocks in front of the player every
 time. **Verified via `npm run selftest`** — 47 of 47 checks pass.
 
-### Phase 4b — Ports + tests + operational polish
+### Phase 4b — Ports + tests
 
-What was originally bundled into Phase 4 alongside rotation. Pushed
-to its own phase to keep 4a tight.
+Status: **landed (with documented workarounds for four Bedrock bugs)**.
 
-Deliverables:
+The test runner closes the agent's iterate-on-failure loop: agent posts
+a spec, builds it, runs declared tests, gets a structured pass/fail
+result, and on failure can refine the spec and retry.
 
-- `pack/src/spec/ports.ts` (or schema.ts extension): named
-  `ports.inputs` (lever, button, pressure_plate, redstone_block)
-  and `ports.outputs` (lamp, piston, comparator, observer) with
-  their positions. Required for any `tests` to address them.
-- `pack/src/world/probes.ts`: readers for each output kind — lamp
-  on/off (`redstone_lamp` vs `lit_redstone_lamp`), piston extension
-  (check head block at facing offset), comparator `output_signal`
-  analog, observer pulse (sample over a window).
-- `pack/src/test/runner.ts`: executes a test's steps using
-  `system.runTimeout` for `wait_ticks`. For `set` actions: lever
-  toggles via state mutation; button "press" via brief
-  redstone-block placement; redstone-block toggles for analog inputs.
-- Daemon: `POST /test` body = `{ specRef | spec, testName?: string }`
-  → `{ results: [{ name, pass, observed, expected, error? }] }`.
+Operational polish (`/redo`, `GET /world`, in-game `/rsforge:undo|redo|history`)
+is split off to **Phase 4c** to keep this commit tight.
+
+Deliverables (as built):
+
+- `pack/src/spec/schema.ts`: extended with `ports: { inputs, outputs }`
+  and `tests: [{ name, steps: [...] }]`. Validator enforces port-kind
+  whitelists, footprint coverage, and that test step values reference
+  only declared ports of the right side.
+- `pack/src/spec/components.ts`: `InputKind` / `OutputKind` enums plus
+  `ALLOWED_INPUT_KINDS` / `ALLOWED_OUTPUT_KINDS`. Phase 4b ships:
+  - inputs:  `lever`, `redstone_block`
+  - outputs: `lamp`, `wire`
+- `pack/src/world/inputs.ts`: `driveInput` dispatcher.
+  - lever: builds a `runCommand("setblock x y z lever [\"lever_direction\"=…,\"open_bit\"=…]")` to fire neighbor updates that `setBlockPermutation` would skip.
+  - redstone_block: `runCommand("setblock x y z minecraft:redstone_block | minecraft:air")` for the same reason.
+- `pack/src/world/probes.ts`: `readOutput` dispatcher.
+  - lamp: `lit_redstone_lamp` → on, else off.
+  - wire: `redstone_signal > 0` → on, else off.
+- `pack/src/test/runner.ts`: async `runTest(test, job)` / `runAllTests(job)`.
+  Uses `system.runTimeout` for `wait_ticks`. Returns structured
+  `TestRunResult` with `failedStep` on first mismatch.
+- `pack/src/jobs.ts`: extended `Job` to retain `spec`, `anchor`, and
+  `rotationSteps` so `/test` can resolve port positions after build.
+- `pack/src/dispatcher.ts`: now async; handles `build`, `undo`, and
+  the new `test` command. /test status is `200` on all-pass, `422`
+  on any-fail.
+- `pack/src/world/builder.ts`: redstone-responsive block placement
+  now follows up `setBlockPermutation` with a `runCommand("setblock ...")`
+  to re-register in the update graph. Stateless redstone blocks
+  (`redstone_wire`, `redstone_lamp`) skip `setBlockPermutation`
+  entirely. See bugs.
+- `tools/forge.mjs`: daemon route `POST /test` + CLI
+  `forge test [jobId] [testName]`. Long-poll up to 30s waiting for
+  the pack to return results.
+- `tools/selftest.mjs`: new test-runner verification section. Builds
+  a 4-block minimal spec (redstone_block input + adjacent wire output),
+  exercises the full set/wait/expect cycle, and checks the four
+  /test rejection paths (bogus jobId, unknown testName, undone job,
+  spec-without-tests). The on-disk `specs/examples/lever-wire-lamp.json`
+  is also build-verified.
+- `bugs/` directory: four Bedrock 1.26.21 bug reports filed (see
+  `bugs/README.md`).
+- Skill: `contraption-testing/SKILL.md` documents the test step
+  grammar, which input/output kinds work reliably, and which Bedrock
+  bugs to work around.
+
+Exit criteria: full set/wait/expect cycle round-trips through
+`POST /build` → `POST /test`. **Verified via `npm run selftest` — 55
+of 55 checks pass.**
+
+### Phase 4c — Operational polish (deferred)
+
+Pushed out of 4b. Deliverables:
+
 - Daemon: `POST /redo` body = `{ jobId? }` → replays the most recently
   undone build.
 - Daemon: `GET /world?bounds=[x1,y1,z1,x2,y2,z2]` → compact dump of
   block IDs and key states for debugging.
-- In-game slash commands wired to the pack-side job store (which the
-  daemon's `/undo` already drives):
+- In-game slash commands wired to the pack-side job store:
   - `/rsforge:undo [jobId]`
   - `/rsforge:redo [jobId]`
   - `/rsforge:history`
-- Skill: `contraption-testing/SKILL.md` — how to phrase `tests`, why
-  we wait N ticks, how to detect race conditions.
-- Selftest extension: build an AND-gate spec with a `tests` block,
-  run `POST /test`, assert all named cases PASS.
+  - `/rsforge:build <spec_id>` — auto-anchors at the player's current
+    position+facing before building, so the spec lands "in front of me
+    now" without needing a separate `/rsforge:anchor` step. Fixes the
+    "I moved between anchor and build" UX trap.
+- More test step kinds: button (timed press via brief redstone_block
+  flicker), pressure_plate (transient entity spawn), comparator output
+  read (analog 0-15), observer pulse window read.
 
-Exit criteria: a saved spec for "AND gate" with `anchor:
-"player-facing"` and a `tests` block passes via `POST /test`, and a
-deliberately broken spec fails with the right `observed` values.
+Exit criteria: agent can chain build → test → undo → modify-spec →
+build → test entirely over HTTP without needing the user to type
+slash commands, and a player can also drive the same operations
+in-game via the new slash commands.
 
 ### Phase 5 — Agent operating loop
 

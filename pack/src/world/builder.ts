@@ -7,6 +7,21 @@
  *   - "player-facing" : local +X axis is rotated to point "in front of
  *                       the player", and directional block states
  *                       rotate to match. See pack/src/world/transform.ts.
+ *
+ * IMPORTANT: blocks whose behaviour depends on neighbour power state
+ * (redstone wire, lamp, repeater, comparator, observer) need to go
+ * through Bedrock's vanilla /setblock path to be correctly registered
+ * in the redstone update graph. setBlockPermutation alone places the
+ * block but doesn't fire the neighbor-update notifications, so e.g.
+ * lamps placed by setBlockPermutation are destroyed (set to air)
+ * instead of transitioning to lit_redstone_lamp when adjacent wire
+ * powers up. See bugs/script-api-lamp-destroyed-on-transition.md
+ * (and the three sibling bug reports — they share a root cause).
+ *
+ * Workaround used here: after the natural setBlockPermutation call,
+ * follow up with `dim.runCommand("setblock x y z <id>")` for the
+ * affected block types. The block ends up placed twice but only the
+ * second placement registers properly in the update graph.
  */
 import {
   BlockPermutation,
@@ -25,9 +40,43 @@ import {
   type RotationStep,
 } from "./transform.js";
 
+/**
+ * Block IDs that need to skip setBlockPermutation entirely and go
+ * straight through runCommand("setblock ...") for placement. These
+ * are the redstone-responsive blocks whose update-graph registration
+ * gets poisoned by setBlockPermutation, causing the on/off ID-swap
+ * transition to destroy them. See
+ * bugs/script-api-lamp-destroyed-on-transition.md.
+ *
+ * Only listed for STATELESS blocks here; stateful blocks (repeater,
+ * comparator, observer, piston) need their state values preserved,
+ * so they keep using setBlockPermutation + a runCommand follow-up.
+ */
+const RUNCOMMAND_ONLY_STATELESS: ReadonlySet<string> = new Set([
+  "minecraft:redstone_wire",
+  "minecraft:redstone_lamp",
+]);
+
+/**
+ * Stateful redstone-responsive blocks: use setBlockPermutation for the
+ * state, then re-register via runCommand. Imperfect but the best we
+ * can do without re-implementing block-state encoding inline in the
+ * /setblock command string.
+ */
+const STATEFUL_REREGISTER: ReadonlySet<string> = new Set([
+  "minecraft:unpowered_repeater",
+  "minecraft:powered_repeater",
+  "minecraft:unpowered_comparator",
+  "minecraft:powered_comparator",
+  "minecraft:observer",
+  "minecraft:piston",
+  "minecraft:sticky_piston",
+]);
+
 export type Placement = {
   readonly abs: Vector3;
   readonly permutation: BlockPermutation;
+  readonly id: string;
   readonly specIndex: number;
 };
 
@@ -83,7 +132,7 @@ function placeOne(
       `block [${i}] ${blk.id} at local [${blk.at.join(",")}]: ${String(err)}`,
     );
   }
-  return { abs, permutation, specIndex: i };
+  return { abs, permutation, id: blk.id, specIndex: i };
 }
 
 /**
@@ -99,7 +148,34 @@ export function executeBuild(spec: ContraptionSpec, anchor: Anchor): BuildResult
   const snapshot = captureSnapshot(dim, positions);
 
   for (const p of placements) {
+    if (RUNCOMMAND_ONLY_STATELESS.has(p.id)) {
+      // Skip setBlockPermutation entirely for these — using it poisons
+      // the block's update-graph registration so subsequent state
+      // transitions destroy the block. See module header.
+      try {
+        dim.runCommand(`setblock ${p.abs.x} ${p.abs.y} ${p.abs.z} ${p.id}`);
+      } catch (err) {
+        throw new Error(
+          `runCommand placement failed for ${p.id} at ${p.abs.x},${p.abs.y},${p.abs.z}: ${String(err)}`,
+        );
+      }
+      continue;
+    }
+
     dim.setBlockPermutation(p.abs, p.permutation);
+
+    if (STATEFUL_REREGISTER.has(p.id)) {
+      // Re-register stateful redstone blocks in the update graph.
+      // (Their state values are already established by the
+      // setBlockPermutation call above.)
+      try {
+        dim.runCommand(`setblock ${p.abs.x} ${p.abs.y} ${p.abs.z} ${p.id}`);
+      } catch (err) {
+        console.warn(
+          `[rsforge] re-register failed for ${p.id} at ${p.abs.x},${p.abs.y},${p.abs.z}: ${String(err)}`,
+        );
+      }
+    }
   }
 
   const bounds = computeBounds(positions);

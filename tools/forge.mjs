@@ -61,6 +61,7 @@ switch (cmd) {
   case "echo":    await cliCall("POST", "/echo", process.argv.slice(3).join(" ")); break;
   case "build":   await cliBuild(process.argv[3]); break;
   case "undo":    await cliCall("POST", "/undo", JSON.stringify(process.argv[3] ? { jobId: process.argv[3] } : {}), "application/json"); break;
+  case "test":    await cliTest(process.argv[3], process.argv[4]); break;
   case "help":
   default:        printHelp(); process.exit(cmd === "help" ? 0 : 2);
 }
@@ -73,6 +74,7 @@ function printHelp() {
   node tools/forge.mjs echo <message>      POST /echo
   node tools/forge.mjs build <spec.json>   POST /build  (blocks up to 30s)
   node tools/forge.mjs undo [jobId]        POST /undo   (blocks up to 30s)
+  node tools/forge.mjs test [jobId] [test] POST /test   (blocks up to 30s)
 
 Reads FORGE_PORT, FORGE_URL, FORGE_TOKEN from .env at the repo root.`);
 }
@@ -234,6 +236,24 @@ function runDaemon() {
         }
       }
 
+      if (req.method === "POST" && url.pathname === "/test") {
+        let payload = {};
+        if (body.trim()) {
+          try { payload = JSON.parse(body); }
+          catch { return send(400, { error: "invalid json" }); }
+        }
+        try {
+          const result = await enqueueCommand("test", {
+            jobId: payload.jobId,
+            testName: payload.testName,
+          });
+          const status = result?.ok === false ? 422 : 200;
+          return send(status, result);
+        } catch (err) {
+          return send(504, { ok: false, error: String(err.message ?? err) });
+        }
+      }
+
       send(404, { error: "not found", path: url.pathname });
     } catch (err) {
       console.error("handler error:", err);
@@ -273,6 +293,13 @@ async function cliBuild(specPath) {
     process.exit(2);
   }
   await cliCall("POST", "/build", JSON.stringify({ spec }), "application/json");
+}
+
+async function cliTest(jobId, testName) {
+  const body = {};
+  if (jobId) body.jobId = jobId;
+  if (testName) body.testName = testName;
+  await cliCall("POST", "/test", JSON.stringify(body), "application/json");
 }
 
 async function cliCall(method, route, body, contentType) {

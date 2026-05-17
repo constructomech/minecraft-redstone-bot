@@ -1,9 +1,10 @@
 /**
  * ContraptionSpec types + a hand-rolled validator.
  *
- * Phase 3 surface: `anchor: "absolute"` only — block local coords are
- * added to the anchor position with no rotation. Player-facing
- * rotation lands in Phase 4 alongside the transform module.
+ * Phase 3: anchor "absolute" and "player-facing" both supported (the
+ * latter rotates positions + directional state values around Y).
+ * Phase 4b: optional `ports` (named inputs/outputs) and `tests`
+ * (named declarative test sequences).
  */
 
 import { checkStateKeys, isAllowedComponent } from "./components.js";
@@ -21,13 +22,48 @@ export type SpecBlock = {
   readonly states?: Readonly<Record<string, string | number | boolean>>;
 };
 
+// ---------- ports ----------
+
+/** Kinds of ports the test runner can drive (inputs) or read (outputs). */
+export type InputKind  = "lever" | "redstone_block";
+export type OutputKind = "lamp" | "wire";
+
+export const ALLOWED_INPUT_KINDS:  readonly InputKind[]  = ["lever", "redstone_block"];
+export const ALLOWED_OUTPUT_KINDS: readonly OutputKind[] = ["lamp", "wire"];
+
+export type InputPort  = { readonly at: Vec3Tuple; readonly kind: InputKind  };
+export type OutputPort = { readonly at: Vec3Tuple; readonly kind: OutputKind };
+
+export type Ports = {
+  readonly inputs?:  Readonly<Record<string, InputPort>>;
+  readonly outputs?: Readonly<Record<string, OutputPort>>;
+};
+
+// ---------- tests ----------
+
+/** Binary value used for both lever/redstone_block inputs and lamp outputs. */
+export type Binary = "on" | "off";
+
+export type TestStepSet    = { readonly set:    Readonly<Record<string, Binary>> };
+export type TestStepWait   = { readonly wait_ticks: number };
+export type TestStepExpect = { readonly expect: Readonly<Record<string, Binary>> };
+export type TestStep = TestStepSet | TestStepWait | TestStepExpect;
+
+export type ContraptionTest = {
+  readonly name: string;
+  readonly steps: readonly TestStep[];
+};
+
+// ---------- spec ----------
+
 export type ContraptionSpec = {
   readonly name: string;
   readonly version?: number;
   readonly footprint: { readonly size: Vec3Tuple };
-  /** "absolute" only in Phase 3. */
   readonly anchor?: SpecAnchorMode;
   readonly blocks: readonly SpecBlock[];
+  readonly ports?: Ports;
+  readonly tests?: readonly ContraptionTest[];
 };
 
 export type ValidationError = { readonly path: string; readonly message: string };
@@ -59,6 +95,7 @@ export function validateSpec(input: unknown): ValidationResult {
   }
 
   // footprint
+  let footprintSize: Vec3Tuple | null = null;
   if (!isPlainObject(s.footprint)) {
     e("$.footprint", "required object { size: [x,y,z] }");
   } else {
@@ -66,8 +103,12 @@ export function validateSpec(input: unknown): ValidationResult {
     if (!isVec3IntTuple(fp.size)) {
       e("$.footprint.size", "must be [x,y,z] of positive integers");
     } else {
-      const [sx, sy, sz] = fp.size as Vec3Tuple;
-      if (sx <= 0 || sy <= 0 || sz <= 0) e("$.footprint.size", "all dimensions must be > 0");
+      footprintSize = fp.size as Vec3Tuple;
+      const [sx, sy, sz] = footprintSize;
+      if (sx <= 0 || sy <= 0 || sz <= 0) {
+        e("$.footprint.size", "all dimensions must be > 0");
+        footprintSize = null;
+      }
     }
   }
 
@@ -106,7 +147,6 @@ export function validateSpec(input: unknown): ValidationResult {
         } else {
           const err = checkStateKeys(blk.id, blk.states as Record<string, unknown>);
           if (err) e(`${path}.states`, err);
-          // Also validate state value types are primitives.
           for (const [k, v] of Object.entries(blk.states as Record<string, unknown>)) {
             const t = typeof v;
             if (t !== "string" && t !== "number" && t !== "boolean") {
@@ -115,18 +155,70 @@ export function validateSpec(input: unknown): ValidationResult {
           }
         }
       }
-    });
-
-    // Footprint coverage: every block must lie within [0..size).
-    if (isPlainObject(s.footprint) && isVec3IntTuple((s.footprint as Record<string, unknown>).size)) {
-      const [sx, sy, sz] = (s.footprint as Record<string, unknown>).size as Vec3Tuple;
-      s.blocks.forEach((b, i) => {
-        if (!isPlainObject(b)) return;
-        const at = (b as Record<string, unknown>).at;
-        if (!isVec3IntTuple(at)) return;
-        const [x, y, z] = at as Vec3Tuple;
+      // Footprint coverage
+      if (footprintSize && isVec3IntTuple(blk.at)) {
+        const [x, y, z] = blk.at as Vec3Tuple;
+        const [sx, sy, sz] = footprintSize;
         if (x < 0 || y < 0 || z < 0 || x >= sx || y >= sy || z >= sz) {
-          e(`$.blocks[${i}].at`, `position [${x},${y},${z}] outside footprint [0..${sx}, 0..${sy}, 0..${sz})`);
+          e(`${path}.at`, `position [${x},${y},${z}] outside footprint [0..${sx}, 0..${sy}, 0..${sz})`);
+        }
+      }
+    });
+  }
+
+  // ports (optional)
+  const inputPortNames  = new Set<string>();
+  const outputPortNames = new Set<string>();
+  const inputPortKinds  = new Map<string, InputKind>();
+  const outputPortKinds = new Map<string, OutputKind>();
+
+  if (s.ports !== undefined) {
+    if (!isPlainObject(s.ports)) {
+      e("$.ports", "must be a plain object");
+    } else {
+      const ports = s.ports as Record<string, unknown>;
+      validatePortMap(
+        ports.inputs, "inputs", footprintSize, ALLOWED_INPUT_KINDS as readonly string[],
+        inputPortNames, inputPortKinds as Map<string, string>, e,
+      );
+      validatePortMap(
+        ports.outputs, "outputs", footprintSize, ALLOWED_OUTPUT_KINDS as readonly string[],
+        outputPortNames, outputPortKinds as Map<string, string>, e,
+      );
+
+      // input and output names must be disjoint (otherwise set/expect ambiguous)
+      for (const name of inputPortNames) {
+        if (outputPortNames.has(name)) {
+          e(`$.ports`, `port name '${name}' appears in both inputs and outputs`);
+        }
+      }
+    }
+  }
+
+  // tests (optional)
+  if (s.tests !== undefined) {
+    if (!Array.isArray(s.tests)) {
+      e("$.tests", "must be an array if provided");
+    } else {
+      s.tests.forEach((t, i) => {
+        const path = `$.tests[${i}]`;
+        if (!isPlainObject(t)) {
+          e(path, "must be an object");
+          return;
+        }
+        const test = t as Record<string, unknown>;
+        if (typeof test.name !== "string" || !test.name) {
+          e(`${path}.name`, "required non-empty string");
+        }
+        if (!Array.isArray(test.steps) || test.steps.length === 0) {
+          e(`${path}.steps`, "required non-empty array");
+        } else {
+          test.steps.forEach((step, j) => {
+            validateTestStep(
+              step, `${path}.steps[${j}]`,
+              inputPortKinds, outputPortNames, e,
+            );
+          });
         }
       });
     }
@@ -134,12 +226,11 @@ export function validateSpec(input: unknown): ValidationResult {
 
   if (errors.length > 0) return { ok: false, errors };
 
-  // Construct the typed spec from the validated input. We know all
-  // fields are well-formed at this point.
+  // Construct the typed spec from the validated input.
   const spec: ContraptionSpec = {
     name: s.name as string,
     ...(s.version !== undefined ? { version: s.version as number } : {}),
-    footprint: { size: ((s.footprint as Record<string, unknown>).size) as Vec3Tuple },
+    footprint: { size: footprintSize! },
     anchor,
     blocks: (s.blocks as unknown[]).map((b) => {
       const bb = b as Record<string, unknown>;
@@ -150,6 +241,8 @@ export function validateSpec(input: unknown): ValidationResult {
       };
       return out;
     }),
+    ...(s.ports !== undefined ? { ports: s.ports as Ports } : {}),
+    ...(s.tests !== undefined ? { tests: s.tests as readonly ContraptionTest[] } : {}),
   };
   return { ok: true, spec };
 }
@@ -166,4 +259,105 @@ function isVec3IntTuple(x: unknown): x is Vec3Tuple {
     x.length === 3 &&
     x.every((n) => typeof n === "number" && Number.isInteger(n))
   );
+}
+
+function isBinaryValue(v: unknown): v is Binary {
+  return v === "on" || v === "off";
+}
+
+function validatePortMap(
+  raw: unknown,
+  category: "inputs" | "outputs",
+  footprintSize: Vec3Tuple | null,
+  allowedKinds: readonly string[],
+  namesOut: Set<string>,
+  kindsOut: Map<string, string>,
+  e: (path: string, message: string) => void,
+): void {
+  if (raw === undefined) return;
+  if (!isPlainObject(raw)) {
+    e(`$.ports.${category}`, "must be a plain object if provided");
+    return;
+  }
+  for (const [name, value] of Object.entries(raw)) {
+    const path = `$.ports.${category}.${name}`;
+    if (!/^[a-z0-9][a-z0-9_]*$/i.test(name)) {
+      e(path, `port name '${name}' should be alphanumeric/underscore`);
+    }
+    if (!isPlainObject(value)) {
+      e(path, "must be an object { at: [x,y,z], kind: string }");
+      continue;
+    }
+    const port = value as Record<string, unknown>;
+    if (!isVec3IntTuple(port.at)) {
+      e(`${path}.at`, "must be [x,y,z] of integers");
+    } else if (footprintSize) {
+      const [x, y, z] = port.at as Vec3Tuple;
+      const [sx, sy, sz] = footprintSize;
+      if (x < 0 || y < 0 || z < 0 || x >= sx || y >= sy || z >= sz) {
+        e(`${path}.at`, `position outside footprint [0..${sx}, 0..${sy}, 0..${sz})`);
+      }
+    }
+    if (typeof port.kind !== "string" || !allowedKinds.includes(port.kind)) {
+      e(`${path}.kind`, `must be one of: ${allowedKinds.join(" | ")}`);
+    } else {
+      namesOut.add(name);
+      kindsOut.set(name, port.kind);
+    }
+  }
+}
+
+function validateTestStep(
+  step: unknown,
+  path: string,
+  inputPortKinds: Map<string, InputKind>,
+  outputPortNames: Set<string>,
+  e: (p: string, m: string) => void,
+): void {
+  if (!isPlainObject(step)) {
+    e(path, "step must be an object");
+    return;
+  }
+  const s = step as Record<string, unknown>;
+
+  if ("set" in s) {
+    if (!isPlainObject(s.set)) {
+      e(`${path}.set`, "must be a plain object");
+      return;
+    }
+    for (const [portName, value] of Object.entries(s.set as Record<string, unknown>)) {
+      if (!inputPortKinds.has(portName)) {
+        e(`${path}.set.${portName}`, `unknown input port (defined ports: ${Array.from(inputPortKinds.keys()).join(", ") || "<none>"})`);
+        continue;
+      }
+      if (!isBinaryValue(value)) {
+        e(`${path}.set.${portName}`, `value must be "on" or "off"`);
+      }
+    }
+    return;
+  }
+  if ("wait_ticks" in s) {
+    if (typeof s.wait_ticks !== "number" || !Number.isInteger(s.wait_ticks) || s.wait_ticks < 0) {
+      e(`${path}.wait_ticks`, "must be a non-negative integer");
+    }
+    return;
+  }
+  if ("expect" in s) {
+    if (!isPlainObject(s.expect)) {
+      e(`${path}.expect`, "must be a plain object");
+      return;
+    }
+    for (const [portName, value] of Object.entries(s.expect as Record<string, unknown>)) {
+      if (!outputPortNames.has(portName)) {
+        e(`${path}.expect.${portName}`, `unknown output port (defined ports: ${Array.from(outputPortNames).join(", ") || "<none>"})`);
+        continue;
+      }
+      if (!isBinaryValue(value)) {
+        e(`${path}.expect.${portName}`, `value must be "on" or "off"`);
+      }
+    }
+    return;
+  }
+
+  e(path, `step must have exactly one of: set | wait_ticks | expect`);
 }
