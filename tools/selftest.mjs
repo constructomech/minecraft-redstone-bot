@@ -236,10 +236,19 @@ try {
     predicate: (h) => h.anchor && h.anchor.dimension === "minecraft:overworld" && h.anchor.pos.x === 4,
   });
 
+  // Lay a solid pad at y=69 below the entire 5x5 cross we may build at,
+  // so redstone wire has a supporting block and doesn't get destroyed
+  // by physics. Without this the harness build site is in the air and
+  // wires evaporate within a tick of placement.
+  const padCells = new Set();
+  for (let x = 2; x <= 6; x++) padCells.add(`${x} 69 4`);
+  for (let z = 2; z <= 6; z++) padCells.add(`4 69 ${z}`);
+  for (const cell of padCells) bds.send(`setblock ${cell} stone`);
+
   // Clear the build site so pre-build state is deterministic.
   // (Selftest reruns and discover-states.mjs both leave stuff behind.)
   for (const x of [4, 5, 6]) bds.send(`setblock ${x} 70 4 air`);
-  await new Promise((r) => setTimeout(r, 300));
+  await new Promise((r) => setTimeout(r, 400));
   for (const x of [4, 5, 6]) await checkBlock(bds, x, 70, 4, "minecraft:air");
 
   const testSpec = {
@@ -311,7 +320,10 @@ try {
     for (const p of c.positions) allPos.add(`${p[0]} ${p[1]} ${p[2]}`);
   }
   for (const key of allPos) bds.send(`setblock ${key} air`);
-  await new Promise((r) => setTimeout(r, 300));
+  // Pad at y=69 was already laid above (stone). Reapply just in case the
+  // earlier undo restored prior contents at those positions.
+  for (const cell of padCells) bds.send(`setblock ${cell} stone`);
+  await new Promise((r) => setTimeout(r, 400));
 
   for (const c of rotationCases) {
     bds.send(`scriptevent rsforge:debug_setanchor 4 70 4 ${c.facing}`);

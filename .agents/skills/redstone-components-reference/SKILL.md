@@ -57,7 +57,7 @@ This skill explains the entries.
 
 | ID | state keys | notes |
 | -- | ---------- | ----- |
-| `minecraft:lever` | `lever_direction`, `open_bit` | `lever_direction` enum: `north \| south \| east \| west` (wall), `up_north_south \| up_east_west` (ceiling), `down_north_south \| down_east_west` (floor; default). `open_bit` true = pulled (powered). |
+| `minecraft:lever` | `lever_direction`, `open_bit` | `lever_direction` enum: `north \| south \| east \| west` (wall), `up_north_south \| up_east_west` (FLOOR mount, lever sits upright on a block), `down_north_south \| down_east_west` (CEILING mount, lever hangs upside-down from a block above). **Default is `down_east_west` (ceiling)**, which looks upside-down sitting on the ground — explicitly set `up_east_west` or `up_north_south` for floor levers. `open_bit` true = pulled (powered). |
 | `minecraft:wooden_button` | `facing_direction`, `button_pressed_bit` | `facing_direction` int 0–5: 0=down, 1=up, 2=north, 3=south, 4=west, 5=east. `button_pressed_bit` false by default. |
 | `minecraft:stone_button` | `facing_direction`, `button_pressed_bit` | same as wooden; stone version takes longer to depress |
 | `minecraft:wooden_pressure_plate` | (none — `redstone_signal` is read-only) | binary trigger (any entity → 15) |
@@ -157,6 +157,23 @@ Java!):
 | 1 | west |
 | 2 | north |
 | 3 | east |
+
+## Default-state footguns
+
+A few Bedrock blocks have defaults that look wrong for the typical
+spec use case. Always set these explicitly:
+
+| Block | Default state | What you usually want |
+| ----- | ------------- | --------------------- |
+| `minecraft:lever` | `lever_direction: "down_east_west"` (ceiling mount, lever hangs upside-down) | `"up_east_west"` or `"up_north_south"` for a floor-mounted upright lever |
+| `minecraft:redstone_torch` | `torch_facing_direction: "unknown"` (placed in air with no mount → broken visual) | `"top"` for floor mount; one of `"north" \| "south" \| "east" \| "west"` for wall mount |
+| `minecraft:observer` | `facing_direction: 0` (down) | Usually `2-5` so the front face is horizontal toward what you're observing |
+| `minecraft:piston` | `facing_direction: 0` (down) | Usually `2-5` so the head extends horizontally |
+
+These are quirks of Bedrock's "default state when the engine can't
+infer from the placement context." The spec should always set them
+explicitly; with `anchor: "player-facing"` they rotate correctly per
+the table above.
 
 ## Hard rules for spec authors
 
