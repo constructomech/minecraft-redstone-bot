@@ -86,13 +86,11 @@ pwsh tools/bds-run.ps1
 npm install
 npm run deploy
 
-# 4. Start the forge daemon (it serves the HTTP API on 127.0.0.1:33000).
-node tools/forge.mjs daemon
+# 4. Start daemon + BDS together (one terminal). Type 'stop' at the BDS
+#    prompt to shut everything down cleanly.
+pwsh tools/rsforge-run.ps1
 
-# 5. In a second terminal, boot the server.
-pwsh tools/bds-run.ps1
-
-# 6. In a third terminal, try the CLI.
+# 5. In a second terminal, use the CLI.
 node tools/forge.mjs health
 ```
 
@@ -107,6 +105,10 @@ node tools/forge.mjs build specs/examples/lever-wire-lamp.json
 node tools/forge.mjs undo
 # { "ok": true, "data": { "jobId": "...", "restored": 3 } }
 ```
+
+If you prefer separate terminals for daemon and server logs, the
+underlying scripts (`node tools/forge.mjs daemon` and
+`pwsh tools/bds-run.ps1`) still work directly.
 
 ### Self-test (no player needed)
 
@@ -161,7 +163,8 @@ pack/                      # behavior pack source (Phase 1+)
   └── tsconfig.json
 tools/                     # PowerShell + Node helpers
   ├── bds-install.ps1      # download + install BDS
-  ├── bds-run.ps1          # launch the installed BDS
+  ├── bds-run.ps1          # launch the installed BDS (foreground only)
+  ├── rsforge-run.ps1      # launch daemon + BDS together (preferred)
   ├── bds-control.mjs      # programmatic BDS spawn + stdin/stdout (used by selftest)
   ├── enable-experiments.mjs   # NBT-edit level.dat to enable Beta APIs
   ├── pack-build.mjs       # esbuild bundle
