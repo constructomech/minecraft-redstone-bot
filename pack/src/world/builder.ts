@@ -2,9 +2,11 @@
  * Builder: turn a ContraptionSpec + Anchor into actual block placements,
  * snapshotting the pre-build state first so /undo can restore it.
  *
- * Phase 3: `anchor: "absolute"` only — local coords are added to the
- * anchor position with no rotation. Player-facing rotation lands
- * alongside the transform module in Phase 4.
+ * Two anchor modes:
+ *   - "absolute"      : local coords add to anchor.pos, no rotation.
+ *   - "player-facing" : local +X axis is rotated to point "in front of
+ *                       the player", and directional block states
+ *                       rotate to match. See pack/src/world/transform.ts.
  */
 import {
   BlockPermutation,
@@ -13,8 +15,15 @@ import {
   type Vector3,
 } from "@minecraft/server";
 import type { Anchor } from "../anchor.js";
-import type { ContraptionSpec } from "../spec/schema.js";
+import { findComponent } from "../spec/components.js";
+import type { ContraptionSpec, SpecBlock } from "../spec/schema.js";
 import { captureSnapshot, type Snapshot } from "./snapshot.js";
+import {
+  rotatePosition,
+  rotationForFacing,
+  rotateStates,
+  type RotationStep,
+} from "./transform.js";
 
 export type Placement = {
   readonly abs: Vector3;
@@ -26,6 +35,7 @@ export type BuildResult = {
   readonly placed: number;
   readonly snapshot: Snapshot;
   readonly bounds: { readonly min: Vector3; readonly max: Vector3 };
+  readonly rotationSteps: RotationStep;
 };
 
 /**
@@ -33,27 +43,47 @@ export type BuildResult = {
  * and concrete BlockPermutations. Throws on the first block whose
  * id+states are rejected by Bedrock's BlockPermutation.resolve.
  */
-export function planPlacements(spec: ContraptionSpec, anchor: Anchor): Placement[] {
-  const placements: Placement[] = [];
-  spec.blocks.forEach((blk, i) => {
-    const abs: Vector3 = {
-      x: anchor.pos.x + blk.at[0],
-      y: anchor.pos.y + blk.at[1],
-      z: anchor.pos.z + blk.at[2],
-    };
-    let permutation: BlockPermutation;
-    try {
-      permutation = blk.states && Object.keys(blk.states).length > 0
-        ? BlockPermutation.resolve(blk.id, blk.states as Record<string, string | number | boolean>)
-        : BlockPermutation.resolve(blk.id);
-    } catch (err) {
-      throw new Error(
-        `block [${i}] ${blk.id} at local [${blk.at.join(",")}]: ${String(err)}`,
-      );
+export function planPlacements(spec: ContraptionSpec, anchor: Anchor): {
+  placements: Placement[];
+  rotationSteps: RotationStep;
+} {
+  const mode = spec.anchor ?? "absolute";
+  const steps: RotationStep = mode === "player-facing"
+    ? rotationForFacing(anchor.facing)
+    : 0;
+
+  const placements: Placement[] = spec.blocks.map((blk, i) => placeOne(blk, i, anchor, steps));
+  return { placements, rotationSteps: steps };
+}
+
+function placeOne(
+  blk: SpecBlock,
+  i: number,
+  anchor: Anchor,
+  steps: RotationStep,
+): Placement {
+  const localRotated = rotatePosition(blk.at, steps);
+  const abs: Vector3 = {
+    x: anchor.pos.x + localRotated[0],
+    y: anchor.pos.y + localRotated[1],
+    z: anchor.pos.z + localRotated[2],
+  };
+
+  let permutation: BlockPermutation;
+  try {
+    if (blk.states && Object.keys(blk.states).length > 0) {
+      const def = findComponent(blk.id);
+      const rotatedStates = rotateStates(blk.states, def?.stateRotations, steps);
+      permutation = BlockPermutation.resolve(blk.id, rotatedStates);
+    } else {
+      permutation = BlockPermutation.resolve(blk.id);
     }
-    placements.push({ abs, permutation, specIndex: i });
-  });
-  return placements;
+  } catch (err) {
+    throw new Error(
+      `block [${i}] ${blk.id} at local [${blk.at.join(",")}]: ${String(err)}`,
+    );
+  }
+  return { abs, permutation, specIndex: i };
 }
 
 /**
@@ -64,7 +94,7 @@ export function planPlacements(spec: ContraptionSpec, anchor: Anchor): Placement
 export function executeBuild(spec: ContraptionSpec, anchor: Anchor): BuildResult {
   const dim = world.getDimension(anchor.dimension);
 
-  const placements = planPlacements(spec, anchor);
+  const { placements, rotationSteps } = planPlacements(spec, anchor);
   const positions = placements.map((p) => p.abs);
   const snapshot = captureSnapshot(dim, positions);
 
@@ -73,7 +103,7 @@ export function executeBuild(spec: ContraptionSpec, anchor: Anchor): BuildResult
   }
 
   const bounds = computeBounds(positions);
-  return { placed: placements.length, snapshot, bounds };
+  return { placed: placements.length, snapshot, bounds, rotationSteps };
 }
 
 function computeBounds(positions: readonly Vector3[]): { min: Vector3; max: Vector3 } {

@@ -84,6 +84,55 @@ This skill explains the entries.
 | `minecraft:piston` | `facing_direction` | head extends in the +facing direction when powered. Push limit: 12 blocks. |
 | `minecraft:sticky_piston` | `facing_direction` | also pulls the block in front when retracting |
 
+## Rotation under `anchor: "player-facing"`
+
+When a spec uses `anchor: "player-facing"`, the builder rotates both
+positions and certain state values around the world Y axis so the
+spec's local `+X` ends up "in front of the player" (the direction
+`anchor.facing` recorded). The rotation step is:
+
+| `anchor.facing` | Steps (CW 90°) |
+| --------------- | -------------- |
+| `east`          | 0 (identity)   |
+| `south`         | 1              |
+| `west`          | 2              |
+| `north`         | 3              |
+
+State values rotate according to a per-component tag in
+`pack/src/spec/components.ts`. The rotation kinds are:
+
+| Tag             | Behaviour |
+| --------------- | --------- |
+| `cardinal`      | string `north|south|east|west`; cycles 1 step CW per rotation step |
+| `axis6`         | string with `up|down` invariant; cardinals cycle |
+| `torch_mount`   | string with `top` invariant; cardinals cycle |
+| `lever_mount`   | wall cardinals cycle as cardinals; `up_*` / `down_*` axis values swap NS↔EW on 90°/270° and are invariant on 180° |
+| `facing_int`    | int 0–5 (0=down, 1=up invariant); 2/5/3/4 cycle (north→east→south→west) |
+| `direction_int` | int 0–3; `(n + steps) % 4` |
+
+Which state keys carry which tag (live, from
+`pack/src/spec/components.ts`):
+
+| Block | State key | Rotation tag |
+| ----- | --------- | ------------ |
+| `lever` | `lever_direction` | `lever_mount` |
+| `wooden_button` / `stone_button` | `facing_direction` | `facing_int` |
+| `redstone_torch` | `torch_facing_direction` | `torch_mount` |
+| `unpowered_repeater` | `direction` | `direction_int` |
+| `unpowered_repeater` | `minecraft:cardinal_direction` | `cardinal` |
+| `unpowered_comparator` | `direction` | `direction_int` |
+| `unpowered_comparator` | `minecraft:cardinal_direction` | `cardinal` |
+| `observer` | `facing_direction` | `facing_int` |
+| `observer` | `minecraft:facing_direction` | `axis6` |
+| `piston` / `sticky_piston` | `facing_direction` | `facing_int` |
+
+State keys NOT in this table (e.g. `open_bit`, `repeater_delay`,
+`output_subtract_bit`, `redstone_signal`) pass through unchanged
+regardless of rotation step.
+
+Math is unit-tested host-side in `test/transform.test.ts`
+(`npm test` — 35 truth-table assertions, finishes in ~10ms).
+
 ## Direction conventions
 
 `facing_direction` integer mapping (Bedrock convention; differs from

@@ -2,7 +2,7 @@
   "name": "lever-wire-lamp",
   "version": 1,
   "footprint": { "size": [3, 1, 1] },
-  "anchor": "absolute",
+  "anchor": "player-facing",
   "blocks": [
     { "at": [0, 0, 0], "id": "minecraft:lever" },
     { "at": [1, 0, 0], "id": "minecraft:redstone_wire" },

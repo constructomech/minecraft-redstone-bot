@@ -77,6 +77,7 @@ function handleBuild(payload: { spec: unknown }, jobId: string): CommandResult {
       name: spec.name,
       placed: result.placed,
       bounds: result.bounds,
+      rotationSteps: result.rotationSteps,
     },
   };
 }

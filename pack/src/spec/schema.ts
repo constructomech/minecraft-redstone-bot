@@ -78,9 +78,6 @@ export function validateSpec(input: unknown): ValidationResult {
       e("$.anchor", "must be 'absolute' or 'player-facing'");
     } else {
       anchor = s.anchor;
-      if (anchor === "player-facing") {
-        e("$.anchor", "'player-facing' rotation lands in Phase 4; use 'absolute' for now");
-      }
     }
   }
 

@@ -488,30 +488,56 @@ including pre-build clean state, build with the correct blocks,
 snapshot-precise undo, validation rejection, and "no anchor set"
 rejection.
 
-### Phase 4 — Rotation + ports + tests
+### Phase 4a — Rotation (player-facing anchor)
 
-Folds in what was originally split between Phase 3 (rotation) and
-Phase 4 (tests). Rationale: rotation depends on the same transform
-math the test runner needs to drive directional inputs, so they ship
-together.
+Status: **landed**. The orientation pain from Phase 3 is resolved.
+A spec with `anchor: "player-facing"` now lands "in front of the
+player" regardless of which cardinal direction they were facing
+when they set the anchor.
+
+Deliverables (as built):
+
+- `pack/src/world/transform.ts`: pure rotation math, no imports.
+  Functions: `rotationForFacing`, `rotatePosition`, `rotateCardinal`,
+  `rotateAxis6`, `rotateTorchMount`, `rotateLeverMount`,
+  `rotateFacingInt`, `rotateDirectionInt`, `rotateStateValue` (kind
+  dispatcher), `rotateStates` (batch). `-0` normalized to `+0` so
+  deepEqual is well-behaved.
+- `pack/src/spec/components.ts`: each directional state key tagged
+  with a `RotationKind` (`cardinal | axis6 | torch_mount |
+  lever_mount | facing_int | direction_int`) on a new
+  `stateRotations` map per component.
+- `pack/src/world/builder.ts`: `planPlacements` picks the rotation
+  step from `rotationForFacing(anchor.facing)` when the spec uses
+  `"player-facing"`, then rotates positions and per-block state
+  values before calling `BlockPermutation.resolve`. `BuildResult`
+  surfaces `rotationSteps` so the agent can log/verify.
+- `pack/src/spec/schema.ts`: stops rejecting `"player-facing"`.
+- `test/transform.test.ts`: 35 host-side `node:test` truth-table
+  assertions covering every rotation function and a full
+  lever→wire→lamp position round-trip. `npm test` (~10ms).
+- `tools/selftest.mjs` extension: builds the example spec at all
+  four cardinal facings and asserts every block lands at the
+  expected absolute coordinate.
+- `specs/examples/lever-wire-lamp.json`: switched to
+  `anchor: "player-facing"` so the canonical example does the
+  right thing by default.
+
+Exit criteria: same 3-block lever→wire→lamp spec, built at all 4
+cardinal facings, places its blocks in front of the player every
+time. **Verified via `npm run selftest`** — 47 of 47 checks pass.
+
+### Phase 4b — Ports + tests + operational polish
+
+What was originally bundled into Phase 4 alongside rotation. Pushed
+to its own phase to keep 4a tight.
 
 Deliverables:
 
-- `pack/src/world/transform.ts`: rotation/mirror math for positions
-  AND for state values of directional blocks (repeater
-  `minecraft:cardinal_direction`, observer `minecraft:facing_direction`,
-  piston `facing_direction`, lever `lever_direction`, button
-  `facing_direction`, torch `torch_facing_direction`). Pure functions.
-- `test/transform.test.ts`: host-side `node:test` runner with truth
-  tables — runs without Minecraft, instantly. Wired into
-  `npm test`.
-- `pack/src/spec/schema.ts` updated: `anchor: "player-facing"`
-  becomes valid; builder rotates spec coords + directional state
-  values around Y based on anchor.facing.
-- `pack/src/spec/ports.ts`: named `inputs` (lever, button,
-  pressure_plate, redstone_block) and `outputs` (lamp, piston,
-  comparator, observer) with their positions. The spec adds
-  `ports: { inputs: {...}, outputs: {...} }`.
+- `pack/src/spec/ports.ts` (or schema.ts extension): named
+  `ports.inputs` (lever, button, pressure_plate, redstone_block)
+  and `ports.outputs` (lamp, piston, comparator, observer) with
+  their positions. Required for any `tests` to address them.
 - `pack/src/world/probes.ts`: readers for each output kind — lamp
   on/off (`redstone_lamp` vs `lit_redstone_lamp`), piston extension
   (check head block at facing offset), comparator `output_signal`
@@ -533,13 +559,11 @@ Deliverables:
   - `/rsforge:history`
 - Skill: `contraption-testing/SKILL.md` — how to phrase `tests`, why
   we wait N ticks, how to detect race conditions.
-- Selftest extension: builds a rotated lever-wire-lamp in each of the
-  4 cardinal facings, verifies block positions and directional
-  states.
+- Selftest extension: build an AND-gate spec with a `tests` block,
+  run `POST /test`, assert all named cases PASS.
 
-Exit criteria: a saved spec for "AND gate" with `anchor: "player-facing"`
-and a `tests` block passes via `POST /test`, both when the anchor
-faces north and when it faces east (proves rotation works), and a
+Exit criteria: a saved spec for "AND gate" with `anchor:
+"player-facing"` and a `tests` block passes via `POST /test`, and a
 deliberately broken spec fails with the right `observed` values.
 
 ### Phase 5 — Agent operating loop

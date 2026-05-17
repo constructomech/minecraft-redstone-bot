@@ -40,7 +40,7 @@ roughly one poll interval plus the build itself — typically <500ms.
   "name": "lever-wire-lamp",      // required, kebab/snake identifier
   "version": 1,                    // optional, positive integer
   "footprint": { "size": [3, 1, 1] }, // required, positive [x, y, z]
-  "anchor": "absolute",            // optional; "absolute" only in Phase 3
+  "anchor": "player-facing",       // "absolute" | "player-facing"; default "absolute"
   "blocks": [
     {
       "at": [0, 0, 0],             // integer [x, y, z] local to anchor
@@ -62,10 +62,19 @@ roughly one poll interval plus the build itself — typically <500ms.
   `blocks[].at` must satisfy `0 ≤ at[i] < size[i]`. The validator
   enforces this.
 - **`anchor`**:
-  - `"absolute"` (Phase 3 default): block absolute position is
-    `(anchor.pos[i] + at[i])`. No rotation applied.
-  - `"player-facing"` (Phase 4+): not yet implemented. The validator
-    rejects this value with a clear "use 'absolute' for now" error.
+  - `"absolute"`: block absolute position is `(anchor.pos[i] + at[i])`.
+    No rotation applied. Directional state values are passed through
+    unchanged. Use this when you want world-frame coordinates.
+  - `"player-facing"` (Phase 4a, recommended for new specs): local
+    `+X` axis is rotated to point "in front of the player" (the
+    direction `anchor.facing` records). Positions AND directional
+    block state values rotate together so the whole contraption
+    stays self-consistent.
+
+    The rotation step is `0` (identity) when `anchor.facing === "east"`,
+    `1` (90° CW) for `"south"`, `2` (180°) for `"west"`, `3` (270° CW)
+    for `"north"`. The math lives in `pack/src/world/transform.ts`
+    and has unit tests at `test/transform.test.ts` — `npm test`.
 - **`blocks[].id`**: must be in
   [`pack/src/spec/components.ts`](../../pack/src/spec/components.ts).
   See `redstone-components-reference` skill for the live list.
@@ -92,7 +101,7 @@ roughly one poll interval plus the build itself — typically <500ms.
   "name": "lever-wire-lamp",
   "version": 1,
   "footprint": { "size": [3, 1, 1] },
-  "anchor": "absolute",
+  "anchor": "player-facing",
   "blocks": [
     { "at": [0, 0, 0], "id": "minecraft:lever" },
     { "at": [1, 0, 0], "id": "minecraft:redstone_wire" },
@@ -101,13 +110,18 @@ roughly one poll interval plus the build itself — typically <500ms.
 }
 ```
 
+With `anchor: "player-facing"`, the lever lands at the anchor block and
+the wire + lamp extend "in front of" whichever cardinal direction the
+player faced when they ran `/rsforge:anchor`. The selftest verifies all
+four facings (`east`, `south`, `west`, `north`).
+
 Deploy via CLI:
 
 ```pwsh
-# Set anchor to (4, 70, 4) facing north (in-game: /rsforge:anchor;
-# or for self-test: /scriptevent rsforge:debug_setanchor 4 70 4 north)
+# Set anchor in-game with /rsforge:anchor (or, for selftest:
+# /scriptevent rsforge:debug_setanchor 4 70 4 north)
 node tools/forge.mjs build specs/examples/lever-wire-lamp.json
-# -> { "ok": true, "data": { "jobId": "...", "placed": 3, "bounds": {...} } }
+# -> { "ok": true, "data": { "jobId": "...", "placed": 3, "bounds": {...}, "rotationSteps": 0|1|2|3 } }
 
 # Undo it
 node tools/forge.mjs undo
@@ -116,16 +130,15 @@ node tools/forge.mjs undo
 
 ## What lands in later phases
 
-- **Phase 4**: `anchor: "player-facing"` — positions and directional
-  block states rotate based on the anchor's `facing`. The transform
-  math is unit-tested via `node:test` host-side before wiring into
-  the builder.
-- **Phase 4**: `ports` — named inputs (lever, button, pressure_plate,
-  redstone_block) and outputs (lamp, piston, comparator, observer)
-  with their positions. Required for any `tests` to address them.
-- **Phase 4**: `tests` — declarative test sequences (`set`,
+- **Phase 4b**: `ports` — named inputs (lever, button,
+  pressure_plate, redstone_block) and outputs (lamp, piston,
+  comparator, observer) with their positions. Required for any
+  `tests` to address them.
+- **Phase 4b**: `tests` — declarative test sequences (`set`,
   `wait_ticks`, `expect`) executed by a new `POST /test` endpoint.
   See `contraption-testing` skill.
+- **Phase 4b**: `POST /redo`, `GET /world?bounds=...`, in-game
+  `/rsforge:undo|redo|history` slash commands.
 - **Phase 6**: `includes` — compose patterns from `patterns/` at a
   local offset.
 

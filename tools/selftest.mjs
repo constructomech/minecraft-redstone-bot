@@ -281,6 +281,68 @@ try {
   await checkBlock(bds, 5, 70, 4, "minecraft:air");
   await checkBlock(bds, 6, 70, 4, "minecraft:air");
 
+  // ---------- Phase 4a: player-facing rotation across all 4 cardinals ----------
+
+  console.log("\nTesting player-facing rotation across 4 cardinal facings...");
+
+  const playerFacingSpec = {
+    name: "rotation-test",
+    footprint: { size: [3, 1, 1] },
+    anchor: "player-facing",
+    blocks: [
+      { at: [0, 0, 0], id: "minecraft:lever" },
+      { at: [1, 0, 0], id: "minecraft:redstone_wire" },
+      { at: [2, 0, 0], id: "minecraft:redstone_lamp" },
+    ],
+  };
+
+  // For each facing, the spec's local +X must point in that direction
+  // from the anchor (4, 70, 4).
+  const rotationCases = [
+    { facing: "east",  positions: [[4, 70, 4], [5, 70, 4], [6, 70, 4]] },
+    { facing: "south", positions: [[4, 70, 4], [4, 70, 5], [4, 70, 6]] },
+    { facing: "west",  positions: [[4, 70, 4], [3, 70, 4], [2, 70, 4]] },
+    { facing: "north", positions: [[4, 70, 4], [4, 70, 3], [4, 70, 2]] },
+  ];
+
+  // Clear the entire 5x5 cross we may touch so each iteration starts clean.
+  const allPos = new Set();
+  for (const c of rotationCases) {
+    for (const p of c.positions) allPos.add(`${p[0]} ${p[1]} ${p[2]}`);
+  }
+  for (const key of allPos) bds.send(`setblock ${key} air`);
+  await new Promise((r) => setTimeout(r, 300));
+
+  for (const c of rotationCases) {
+    bds.send(`scriptevent rsforge:debug_setanchor 4 70 4 ${c.facing}`);
+    await bds.waitForLog(
+      new RegExp(`debug_setanchor: \\S+ 4 70 4 ${c.facing}`),
+      { timeoutMs: 5000, fromIndex: bds.log.length },
+    );
+    await pollHealth({
+      timeoutMs: 6000,
+      predicate: (h) => h.anchor && h.anchor.facing === c.facing,
+    });
+
+    const r = await callJson("POST", "/build", { spec: playerFacingSpec });
+    if (!r.ok || r.data?.placed !== 3) {
+      fail(`build (facing ${c.facing})`, JSON.stringify(r));
+      continue;
+    }
+    pass(`build facing ${c.facing}: 3 blocks placed (rotationSteps=${r.data.rotationSteps})`);
+
+    const [lp, wp, lampP] = c.positions;
+    await checkBlock(bds, lp[0], lp[1], lp[2], "minecraft:lever");
+    await checkBlock(bds, wp[0], wp[1], wp[2], "minecraft:redstone_wire");
+    await checkBlock(bds, lampP[0], lampP[1], lampP[2], "minecraft:redstone_lamp");
+
+    // Undo so the next iteration's build site is clear.
+    const u = await callJson("POST", "/undo", {});
+    if (!u.ok || u.data?.restored !== 3) {
+      fail(`undo (facing ${c.facing})`, JSON.stringify(u));
+    }
+  }
+
   // ---------- validation rejection ----------
 
   console.log("\nVerifying spec validation rejects garbage...");

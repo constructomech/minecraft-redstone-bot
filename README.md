@@ -43,15 +43,16 @@ Agent:  → drafts a ContraptionSpec
 
 ## Status
 
-Phase 3. The pack now has a full spec → build → undo pipeline.
-Agent (or CLI) POSTs a `ContraptionSpec` to `/build`, the daemon
-queues it, the pack picks it up on its next 250ms poll, snapshots
-the target region, places the blocks at the anchor, and reports
-results back. `/undo` restores the snapshot precisely. 17-component
-allow-list captured empirically from BDS; spec validation is strict.
-Rotation, ports, and tests land in Phase 4. The full LLM-driven
-build loop comes online once those land. See [PLAN.md](PLAN.md) for
-the phased roadmap.
+Phase 4a. The pack supports `anchor: "player-facing"` — specs land
+"in front of the player" regardless of which cardinal direction they
+were facing when they set the anchor. Positions and directional
+block-state values rotate together so the contraption stays
+self-consistent. Pure rotation math is unit-tested host-side
+(`npm test` — 35 truth-table assertions in ~10ms). The full
+end-to-end pipeline (`npm run selftest`) verifies all four facings.
+Ports + tests + redo + `GET /world` + in-game undo/redo commands
+land in Phase 4b. The full LLM-driven build loop comes online once
+Phase 4b's `POST /test` is wired. See [PLAN.md](PLAN.md).
 
 ## Requirements
 
