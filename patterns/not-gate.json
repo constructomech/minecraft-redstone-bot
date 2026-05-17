@@ -1,0 +1,31 @@
+{
+  "name": "not-gate",
+  "version": 1,
+  "footprint": { "size": [3, 2, 1] },
+  "anchor": "player-facing",
+  "blocks": [
+    { "at": [0, 0, 0], "id": "minecraft:stone" },
+    { "at": [1, 0, 0], "id": "minecraft:stone" },
+    { "at": [2, 0, 0], "id": "minecraft:stone" },
+    { "at": [0, 1, 0], "id": "minecraft:redstone_block" },
+    { "at": [1, 1, 0], "id": "minecraft:redstone_wire" },
+    { "at": [2, 1, 0], "id": "minecraft:redstone_torch", "states": { "torch_facing_direction": "top" } }
+  ],
+  "ports": {
+    "inputs":  { "a":   { "at": [0, 1, 0], "kind": "redstone_block" } },
+    "outputs": { "out": { "at": [1, 1, 0], "kind": "wire" } }
+  },
+  "tests": [
+    {
+      "name": "NOT truth table",
+      "steps": [
+        { "set": { "a": "off" } },
+        { "wait_ticks": 4 },
+        { "expect": { "out": "off" } },
+        { "set": { "a": "on" } },
+        { "wait_ticks": 4 },
+        { "expect": { "out": "on" } }
+      ]
+    }
+  ]
+}

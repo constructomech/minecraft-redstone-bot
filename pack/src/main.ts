@@ -7,12 +7,14 @@
 import { system } from "@minecraft/server";
 import { registerHelloCommand } from "./commands/hello.js";
 import { registerAnchorCommands } from "./commands/anchor.js";
+import { registerWorkflowCommands } from "./commands/workflow.js";
 import { startHeartbeat } from "./transport.js";
 import { startDebug } from "./debug.js";
 
 system.beforeEvents.startup.subscribe((startup) => {
   registerHelloCommand(startup.customCommandRegistry);
   registerAnchorCommands(startup.customCommandRegistry);
+  registerWorkflowCommands(startup.customCommandRegistry);
   console.log("[rsforge] startup: commands registered");
 });
 

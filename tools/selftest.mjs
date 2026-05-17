@@ -524,6 +524,197 @@ try {
   }
   await callJson("POST", "/undo", {});
 
+  // ---------- Phase 4c: /redo round-trip ----------
+
+  console.log("\nVerifying /redo replays an undone build...");
+  for (const cell of padCells) bds.send(`setblock ${cell} stone`);
+  for (const x of [4, 5]) bds.send(`setblock ${x} 70 4 air`);
+  for (const x of [4, 5]) bds.send(`setblock ${x} 71 4 air`);
+  await new Promise((r) => setTimeout(r, 300));
+
+  const redoSpec = {
+    name: "redo-test",
+    footprint: { size: [2, 2, 1] },
+    anchor: "absolute",
+    blocks: [
+      { at: [0, 0, 0], id: "minecraft:stone" },
+      { at: [1, 0, 0], id: "minecraft:stone" },
+      { at: [0, 1, 0], id: "minecraft:redstone_block" },
+      { at: [1, 1, 0], id: "minecraft:redstone_wire" },
+    ],
+  };
+
+  const redoBuild = await callJson("POST", "/build", { spec: redoSpec });
+  if (!redoBuild.ok) { fail("/redo: build", JSON.stringify(redoBuild)); throw new Error("aborting /redo"); }
+  pass(`/redo: initial build (job=${redoBuild.data.jobId.slice(0, 8)}...)`);
+
+  const redoUndo = await callJson("POST", "/undo", {});
+  if (!redoUndo.ok) fail("/redo: undo", JSON.stringify(redoUndo)); else pass("/redo: undo cleared the build");
+  await checkBlock(bds, 4, 71, 4, "minecraft:air");
+
+  const redoResp = await callJson("POST", "/redo", {});
+  if (redoResp.ok && redoResp.data?.placed === 4) {
+    pass(`/redo placed ${redoResp.data.placed} blocks (new job=${redoResp.data.jobId.slice(0, 8)}...)`);
+  } else {
+    fail("/redo", JSON.stringify(redoResp));
+  }
+  await checkBlock(bds, 4, 71, 4, "minecraft:redstone_block");
+
+  // /redo on an unknown jobId should refuse cleanly. (We don't use the
+  // 'no undone' form here because earlier sections leave a lingering
+  // undone job — a clean test of "no undone" would require teardown
+  // across sections, which is more trouble than it's worth.)
+  const redoBogus = await callJson("POST", "/redo", { jobId: "definitely-not-a-job" });
+  if (redoBogus.ok === false && /no job/.test(redoBogus.error ?? "")) {
+    pass("/redo with bogus jobId returns descriptive error");
+  } else {
+    fail("/redo bogus jobId", JSON.stringify(redoBogus));
+  }
+  await callJson("POST", "/undo", {});
+
+  // ---------- Phase 4c: GET /world ----------
+
+  console.log("\nVerifying GET /world dumps blocks correctly...");
+
+  // Use a fresh anchor location nowhere near the rotation/redo tests so
+  // there's no stale snapshot residue or in-flight physics from prior
+  // sections to disturb the placements.
+  bds.send("scriptevent rsforge:debug_setanchor 10 80 10 east");
+  await bds.waitForLog(/debug_setanchor: \S+ 10 80 10 east/, { timeoutMs: 5000, fromIndex: bds.log.length });
+  // Pre-clear the build site and lay a small support floor.
+  for (let y = 79; y <= 81; y++) {
+    for (let x = 10; x <= 11; x++) bds.send(`setblock ${x} ${y} 10 air`);
+  }
+  for (let x = 10; x <= 11; x++) bds.send(`setblock ${x} 79 10 stone`);
+  await new Promise((r) => setTimeout(r, 400));
+
+  const worldSpec = {
+    name: "world-test",
+    footprint: { size: [2, 2, 1] },
+    anchor: "absolute",
+    blocks: [
+      { at: [0, 0, 0], id: "minecraft:stone" },
+      { at: [1, 0, 0], id: "minecraft:stone" },
+      { at: [0, 1, 0], id: "minecraft:stone" },
+      { at: [1, 1, 0], id: "minecraft:glass" },
+    ],
+  };
+  await callJson("POST", "/build", { spec: worldSpec });
+  await new Promise((r) => setTimeout(r, 200));
+
+  const worldRes = await fetch(`${FORGE_URL}/world?bounds=10,80,10,11,81,10`, {
+    headers: { "X-Forge-Token": FORGE_TOKEN },
+  }).then((r) => r.json());
+
+  if (worldRes.ok && worldRes.data?.blockCount === 4) {
+    pass(`/world returned ${worldRes.data.blockCount} non-air blocks in 4-cell bounds`);
+    const idsByPos = new Map(
+      worldRes.data.blocks.map((b) => [b.pos.join(","), b.id]),
+    );
+    const expected = {
+      "10,80,10": "minecraft:stone",
+      "11,80,10": "minecraft:stone",
+      "10,81,10": "minecraft:stone",
+      "11,81,10": "minecraft:glass",
+    };
+    let allMatch = true;
+    for (const [key, expectedId] of Object.entries(expected)) {
+      if (idsByPos.get(key) !== expectedId) {
+        fail(`/world block at ${key}`, `expected ${expectedId}, got ${idsByPos.get(key) ?? "missing"}`);
+        allMatch = false;
+      }
+    }
+    if (allMatch) pass("/world returned the expected block IDs at every position");
+  } else {
+    const found = worldRes.data?.blocks?.map((b) => `${b.pos.join(",")}=${b.id}`).join(" | ") ?? "(no blocks)";
+    fail("/world", `expected 4 blocks; got ${worldRes.data?.blockCount ?? "?"}: ${found}`);
+  }
+  await callJson("POST", "/undo", {});
+
+  // /world with bounds that overflow the safety cap should reject.
+  const worldTooBig = await fetch(`${FORGE_URL}/world?bounds=0,0,0,100,100,100`, {
+    headers: { "X-Forge-Token": FORGE_TOKEN },
+  }).then((r) => r.json());
+  if (worldTooBig.ok === false && /cap/.test(worldTooBig.error ?? "")) {
+    pass("/world refuses bounds that exceed the safety cap");
+  } else {
+    fail("/world cap", JSON.stringify(worldTooBig));
+  }
+
+  await callJson("POST", "/undo", {});
+
+  // ---------- Phase 4c: piston output kind ----------
+
+  console.log("\nVerifying piston output kind reads extension correctly...");
+
+  // Move to a fresh location like /world test, well away from earlier
+  // build sites so accumulated update queues don't interfere.
+  bds.send("scriptevent rsforge:debug_setanchor 20 80 20 east");
+  await bds.waitForLog(/debug_setanchor: \S+ 20 80 20 east/, { timeoutMs: 5000, fromIndex: bds.log.length });
+  // Pre-clear and lay support floor.
+  for (let y = 79; y <= 81; y++) {
+    for (let x = 20; x <= 22; x++) bds.send(`setblock ${x} ${y} 20 air`);
+  }
+  for (let x = 20; x <= 22; x++) bds.send(`setblock ${x} 79 20 stone`);
+  await new Promise((r) => setTimeout(r, 400));
+
+  const pistonSpec = {
+    name: "piston-test",
+    footprint: { size: [2, 2, 1] },
+    anchor: "absolute",
+    blocks: [
+      { at: [0, 0, 0], id: "minecraft:stone" },
+      { at: [1, 0, 0], id: "minecraft:stone" },
+      // Place the piston FIRST (unpowered) and only then the redstone_block,
+      // so the piston extends via normal redstone physics rather than via
+      // an extend-on-place transition (the latter seems to destroy the
+      // piston, similar to the lamp transition bug).
+      { at: [1, 1, 0], id: "minecraft:piston", states: { facing_direction: 5 } },
+      { at: [0, 1, 0], id: "minecraft:redstone_block" },
+    ],
+    ports: {
+      inputs:  { a:   { at: [0, 1, 0], kind: "redstone_block" } },
+      outputs: { out: { at: [1, 1, 0], kind: "piston" } },
+    },
+    tests: [
+      {
+        name: "piston follows input",
+        steps: [
+          { set: { a: "off" } },
+          { wait_ticks: 6 },
+          { expect: { out: "off" } },
+          { set: { a: "on" } },
+          { wait_ticks: 6 },
+          { expect: { out: "on" } },
+          { set: { a: "off" } },
+          { wait_ticks: 6 },
+          { expect: { out: "off" } },
+        ],
+      },
+    ],
+  };
+
+  const pistonBuild = await callJson("POST", "/build", { spec: pistonSpec });
+  if (!pistonBuild.ok || pistonBuild.data?.placed !== 4) {
+    fail("piston build", JSON.stringify(pistonBuild));
+  } else {
+    pass(`piston build (job=${pistonBuild.data.jobId.slice(0, 8)}...)`);
+  }
+
+  // Verify piston placement (the probe target is reachable; the
+  // extension itself can't be triggered programmatically — see
+  // bugs/script-api-piston-no-power-response.md).
+  await checkBlock(bds, 21, 81, 20, "minecraft:piston");
+  await callJson("POST", "/undo", {});
+
+  // The piston EXTENSION test below documents the open Bedrock bug —
+  // we ship the 'piston' output kind because the probe works correctly
+  // when a player triggers the piston, but the automated harness
+  // cannot drive a piston via redstone_block toggling (runCommand
+  // setblock of an adjacent redstone_block doesn't fire the piston-
+  // activation update). See bugs/. Leaving as a 'skip' for now.
+  console.log("    \x1b[90m(piston test runner verification skipped — bugs/script-api-piston-no-power-response.md)\x1b[0m");
+
   // ---------- validation rejection ----------
 
   console.log("\nVerifying spec validation rejects garbage...");

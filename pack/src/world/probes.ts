@@ -11,8 +11,9 @@ export function readOutput(
   kind: OutputKind,
 ): Binary {
   switch (kind) {
-    case "lamp": return readLamp(dim, pos);
-    case "wire": return readWire(dim, pos);
+    case "lamp":   return readLamp(dim, pos);
+    case "wire":   return readWire(dim, pos);
+    case "piston": return readPiston(dim, pos);
   }
 }
 
@@ -46,4 +47,39 @@ function readWire(dim: Dimension, pos: Vector3): Binary {
   if (block.typeId !== "minecraft:redstone_wire") return "off";
   const signal = block.permutation.getState("redstone_signal");
   return typeof signal === "number" && signal > 0 ? "on" : "off";
+}
+
+/**
+ * Read a piston's extension state. "on" when the piston has its head
+ * extended (i.e. there's a piston_arm_collision block at the facing
+ * offset), "off" otherwise.
+ *
+ * facing_direction conventions (Bedrock):
+ *   0 = down  (head at pos.y-1)
+ *   1 = up    (head at pos.y+1)
+ *   2 = north (head at pos.z-1)
+ *   3 = south (head at pos.z+1)
+ *   4 = west  (head at pos.x-1)
+ *   5 = east  (head at pos.x+1)
+ */
+function readPiston(dim: Dimension, pos: Vector3): Binary {
+  const block = dim.getBlock(pos);
+  if (!block) return "off";
+  const isPiston = block.typeId === "minecraft:piston" || block.typeId === "minecraft:sticky_piston";
+  if (!isPiston) return "off";
+  const facing = block.permutation.getState("facing_direction");
+  if (typeof facing !== "number") return "off";
+  const headPos: Vector3 = { ...pos };
+  switch (facing) {
+    case 0: headPos.y -= 1; break;
+    case 1: headPos.y += 1; break;
+    case 2: headPos.z -= 1; break;
+    case 3: headPos.z += 1; break;
+    case 4: headPos.x -= 1; break;
+    case 5: headPos.x += 1; break;
+    default: return "off";
+  }
+  const head = dim.getBlock(headPos);
+  if (!head) return "off";
+  return head.typeId === "minecraft:piston_arm_collision" ? "on" : "off";
 }

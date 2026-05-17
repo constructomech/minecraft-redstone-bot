@@ -61,20 +61,24 @@ switch (cmd) {
   case "echo":    await cliCall("POST", "/echo", process.argv.slice(3).join(" ")); break;
   case "build":   await cliBuild(process.argv[3]); break;
   case "undo":    await cliCall("POST", "/undo", JSON.stringify(process.argv[3] ? { jobId: process.argv[3] } : {}), "application/json"); break;
+  case "redo":    await cliCall("POST", "/redo", JSON.stringify(process.argv[3] ? { jobId: process.argv[3] } : {}), "application/json"); break;
   case "test":    await cliTest(process.argv[3], process.argv[4]); break;
+  case "world":   await cliWorld(process.argv.slice(3)); break;
   case "help":
   default:        printHelp(); process.exit(cmd === "help" ? 0 : 2);
 }
 
 function printHelp() {
   console.log(`Usage:
-  node tools/forge.mjs daemon              run the broker daemon
-  node tools/forge.mjs health              GET  /health
-  node tools/forge.mjs anchor              GET  /anchor
-  node tools/forge.mjs echo <message>      POST /echo
-  node tools/forge.mjs build <spec.json>   POST /build  (blocks up to 30s)
-  node tools/forge.mjs undo [jobId]        POST /undo   (blocks up to 30s)
-  node tools/forge.mjs test [jobId] [test] POST /test   (blocks up to 30s)
+  node tools/forge.mjs daemon                      run the broker daemon
+  node tools/forge.mjs health                      GET  /health
+  node tools/forge.mjs anchor                      GET  /anchor
+  node tools/forge.mjs echo <message>              POST /echo
+  node tools/forge.mjs build <spec.json>           POST /build  (blocks up to 30s)
+  node tools/forge.mjs undo [jobId]                POST /undo
+  node tools/forge.mjs redo [jobId]                POST /redo
+  node tools/forge.mjs test [jobId] [test]         POST /test
+  node tools/forge.mjs world <x1> <y1> <z1> <x2> <y2> <z2>   GET /world?bounds=...
 
 Reads FORGE_PORT, FORGE_URL, FORGE_TOKEN from .env at the repo root.`);
 }
@@ -254,6 +258,65 @@ function runDaemon() {
         }
       }
 
+      if (req.method === "POST" && url.pathname === "/redo") {
+        let payload = {};
+        if (body.trim()) {
+          try { payload = JSON.parse(body); }
+          catch { return send(400, { error: "invalid json" }); }
+        }
+        try {
+          const result = await enqueueCommand("redo", { jobId: payload.jobId });
+          const status = result?.ok === false ? 422 : 200;
+          return send(status, result);
+        } catch (err) {
+          return send(504, { ok: false, error: String(err.message ?? err) });
+        }
+      }
+
+      if (req.method === "GET" && url.pathname === "/world") {
+        const boundsStr = url.searchParams.get("bounds");
+        const dimension = url.searchParams.get("dimension") ?? "minecraft:overworld";
+        if (!boundsStr) return send(400, { error: "missing bounds= query param (format: x1,y1,z1,x2,y2,z2)" });
+        const parts = boundsStr.split(",").map((s) => Number.parseInt(s.trim(), 10));
+        if (parts.length !== 6 || parts.some((n) => !Number.isInteger(n))) {
+          return send(400, { error: "bounds must be 6 comma-separated integers" });
+        }
+        try {
+          const result = await enqueueCommand("world", { bounds: parts, dimension });
+          const status = result?.ok === false ? 422 : 200;
+          return send(status, result);
+        } catch (err) {
+          return send(504, { ok: false, error: String(err.message ?? err) });
+        }
+      }
+
+      // GET /spec/<name> — read a spec JSON from disk for the
+      // pack-side /rsforge:build slash command. Looks in specs/,
+      // specs/examples/, and patterns/ in that order.
+      if (req.method === "GET" && url.pathname.startsWith("/spec/")) {
+        const name = decodeURIComponent(url.pathname.substring("/spec/".length));
+        if (!/^[a-z0-9][a-z0-9_\-]*$/i.test(name)) {
+          return send(400, { error: `invalid spec name: ${name}` });
+        }
+        const candidates = [
+          `specs/${name}.json`,
+          `specs/examples/${name}.json`,
+          `patterns/${name}.json`,
+        ];
+        for (const rel of candidates) {
+          const abs = path.join(repoRoot, rel);
+          try {
+            const content = await readFile(abs, "utf8");
+            const spec = JSON.parse(content);
+            return send(200, { source: rel, spec });
+          } catch (err) {
+            if (err.code === "ENOENT") continue;
+            return send(500, { error: `failed to read ${rel}: ${err.message}` });
+          }
+        }
+        return send(404, { error: `spec '${name}' not found in specs/, specs/examples/, or patterns/` });
+      }
+
       send(404, { error: "not found", path: url.pathname });
     } catch (err) {
       console.error("handler error:", err);
@@ -300,6 +363,15 @@ async function cliTest(jobId, testName) {
   if (jobId) body.jobId = jobId;
   if (testName) body.testName = testName;
   await cliCall("POST", "/test", JSON.stringify(body), "application/json");
+}
+
+async function cliWorld(coords) {
+  if (coords.length < 6) {
+    console.error("forge world: need six integers (x1 y1 z1 x2 y2 z2)");
+    process.exit(2);
+  }
+  const bounds = coords.slice(0, 6).join(",");
+  await cliCall("GET", `/world?bounds=${bounds}`);
 }
 
 async function cliCall(method, route, body, contentType) {

@@ -23,14 +23,14 @@ export function driveInput(
   value: "on" | "off",
 ): void {
   switch (kind) {
-    case "lever":          return driveLever(dim, pos, value === "on");
-    case "redstone_block": return driveRedstoneBlock(dim, pos, value === "on");
+    case "lever":           return driveLever(dim, pos, value === "on");
+    case "redstone_block":  return driveRedstoneBlock(dim, pos, value === "on");
+    case "button":          return driveButton(dim, pos, value === "on");
+    case "pressure_plate":  return drivePressurePlate(dim, pos, value === "on");
   }
 }
 
 function driveLever(dim: Dimension, pos: Vector3, on: boolean): void {
-  // Verify there's actually a lever here. If not, fail loud — the test
-  // author probably has the wrong port position.
   const block = dim.getBlock(pos);
   if (!block) {
     throw new Error(`driveLever: block at ${pos.x},${pos.y},${pos.z} is null (chunk unloaded?)`);
@@ -40,31 +40,44 @@ function driveLever(dim: Dimension, pos: Vector3, on: boolean): void {
       `driveLever: expected minecraft:lever at ${pos.x},${pos.y},${pos.z}, found ${block.typeId}`,
     );
   }
-  // Carry the existing lever_direction across so we don't lose it.
   const dir = String(block.permutation.getState("lever_direction") ?? "up_east_west");
-  // /setblock + state value list. Booleans are unquoted true/false.
   const cmd = `setblock ${pos.x} ${pos.y} ${pos.z} minecraft:lever ["lever_direction"="${dir}","open_bit"=${on ? "true" : "false"}]`;
   dim.runCommand(cmd);
 }
 
 function driveRedstoneBlock(dim: Dimension, pos: Vector3, on: boolean): void {
-  // "on" = redstone block present (powering adjacent),
-  // "off" = air at that position.
   const target = on ? "minecraft:redstone_block" : "minecraft:air";
-  const cmd = `setblock ${pos.x} ${pos.y} ${pos.z} ${target}`;
-  let successCount = 0;
-  try {
-    const r = dim.runCommand(cmd);
-    successCount = r.successCount;
-  } catch (err) {
-    console.error(`[rsforge] driveRedstoneBlock '${cmd}' threw: ${String(err)}`);
-    throw err;
-  }
-  // Immediate read-back so we can tell whether runCommand placed it or
-  // lied about success. (See bugs/.)
-  const after = dim.getBlock(pos);
-  console.log(
-    `[rsforge] driveRedstoneBlock '${cmd}' -> successCount=${successCount}, immediate read=${after?.typeId ?? "null"}`,
-  );
+  dim.runCommand(`setblock ${pos.x} ${pos.y} ${pos.z} ${target}`);
 }
 
+function driveButton(dim: Dimension, pos: Vector3, on: boolean): void {
+  const block = dim.getBlock(pos);
+  if (!block) {
+    throw new Error(`driveButton: block at ${pos.x},${pos.y},${pos.z} is null (chunk unloaded?)`);
+  }
+  if (block.typeId !== "minecraft:wooden_button" && block.typeId !== "minecraft:stone_button") {
+    throw new Error(
+      `driveButton: expected a button at ${pos.x},${pos.y},${pos.z}, found ${block.typeId}`,
+    );
+  }
+  // Preserve facing_direction so the button stays on the same wall.
+  const facing = block.permutation.getState("facing_direction") ?? 0;
+  const cmd = `setblock ${pos.x} ${pos.y} ${pos.z} ${block.typeId} ["facing_direction"=${facing},"button_pressed_bit"=${on ? "true" : "false"}]`;
+  dim.runCommand(cmd);
+}
+
+function drivePressurePlate(dim: Dimension, pos: Vector3, on: boolean): void {
+  const block = dim.getBlock(pos);
+  if (!block) {
+    throw new Error(`drivePressurePlate: block at ${pos.x},${pos.y},${pos.z} is null`);
+  }
+  if (block.typeId !== "minecraft:wooden_pressure_plate" && block.typeId !== "minecraft:stone_pressure_plate") {
+    throw new Error(
+      `drivePressurePlate: expected a pressure plate at ${pos.x},${pos.y},${pos.z}, found ${block.typeId}`,
+    );
+  }
+  // Pressure plates output 15 when pressed, 0 when released.
+  const signal = on ? 15 : 0;
+  const cmd = `setblock ${pos.x} ${pos.y} ${pos.z} ${block.typeId} ["redstone_signal"=${signal}]`;
+  dim.runCommand(cmd);
+}

@@ -9,7 +9,7 @@ import type { ContraptionSpec } from "./spec/schema.js";
 import type { RotationStep } from "./world/transform.js";
 import type { Snapshot } from "./world/snapshot.js";
 
-export type JobStatus = "completed" | "undone";
+export type JobStatus = "completed" | "undone" | "redone";
 
 export type Job = {
   readonly id: string;
@@ -44,6 +44,15 @@ export function latestUndoable(): Job | undefined {
   for (let i = order.length - 1; i >= 0; i--) {
     const j = jobs.get(order[i]!);
     if (j && j.status === "completed") return j;
+  }
+  return undefined;
+}
+
+/** Most recent job that's in `undone` status (i.e. ready to redo). */
+export function latestUndone(): Job | undefined {
+  for (let i = order.length - 1; i >= 0; i--) {
+    const j = jobs.get(order[i]!);
+    if (j && j.status === "undone") return j;
   }
   return undefined;
 }

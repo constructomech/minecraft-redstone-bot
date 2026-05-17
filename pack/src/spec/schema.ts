@@ -25,11 +25,11 @@ export type SpecBlock = {
 // ---------- ports ----------
 
 /** Kinds of ports the test runner can drive (inputs) or read (outputs). */
-export type InputKind  = "lever" | "redstone_block";
-export type OutputKind = "lamp" | "wire";
+export type InputKind  = "lever" | "redstone_block" | "button" | "pressure_plate";
+export type OutputKind = "lamp" | "wire" | "piston";
 
-export const ALLOWED_INPUT_KINDS:  readonly InputKind[]  = ["lever", "redstone_block"];
-export const ALLOWED_OUTPUT_KINDS: readonly OutputKind[] = ["lamp", "wire"];
+export const ALLOWED_INPUT_KINDS:  readonly InputKind[]  = ["lever", "redstone_block", "button", "pressure_plate"];
+export const ALLOWED_OUTPUT_KINDS: readonly OutputKind[] = ["lamp", "wire", "piston"];
 
 export type InputPort  = { readonly at: Vec3Tuple; readonly kind: InputKind  };
 export type OutputPort = { readonly at: Vec3Tuple; readonly kind: OutputKind };

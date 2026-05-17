@@ -42,28 +42,28 @@ import {
 
 /**
  * Block IDs that need to skip setBlockPermutation entirely and go
- * straight through runCommand("setblock ...") for placement. These
- * are the redstone-responsive blocks whose update-graph registration
- * gets poisoned by setBlockPermutation, causing the on/off ID-swap
- * transition to destroy them. See
- * bugs/script-api-lamp-destroyed-on-transition.md.
+ * straight through runCommand("setblock ...") for placement.
  *
- * Only listed for STATELESS blocks here; stateful blocks (repeater,
- * comparator, observer, piston) need their state values preserved,
- * so they keep using setBlockPermutation + a runCommand follow-up.
+ * These split into two flavours:
+ *   STATELESS: bare /setblock command (no state values). Wire and lamp
+ *              have engine-computed states (redstone_signal, lit) that
+ *              should be left as defaults so propagation can override
+ *              them.
+ *   STATEFUL:  /setblock with state preservation. Pistons, repeaters,
+ *              comparators, observers carry user-meaningful directional
+ *              state that must travel through to the runCommand path.
+ *
+ * In both cases, setBlockPermutation is SKIPPED — empirically, calling
+ * it before runCommand still poisons the block's update-graph
+ * registration. See bugs/script-api-lamp-destroyed-on-transition.md.
  */
 const RUNCOMMAND_ONLY_STATELESS: ReadonlySet<string> = new Set([
   "minecraft:redstone_wire",
   "minecraft:redstone_lamp",
+  "minecraft:redstone_block",
 ]);
 
-/**
- * Stateful redstone-responsive blocks: use setBlockPermutation for the
- * state, then re-register via runCommand. Imperfect but the best we
- * can do without re-implementing block-state encoding inline in the
- * /setblock command string.
- */
-const STATEFUL_REREGISTER: ReadonlySet<string> = new Set([
+const RUNCOMMAND_ONLY_STATEFUL: ReadonlySet<string> = new Set([
   "minecraft:unpowered_repeater",
   "minecraft:powered_repeater",
   "minecraft:unpowered_comparator",
@@ -149,9 +149,10 @@ export function executeBuild(spec: ContraptionSpec, anchor: Anchor): BuildResult
 
   for (const p of placements) {
     if (RUNCOMMAND_ONLY_STATELESS.has(p.id)) {
-      // Skip setBlockPermutation entirely for these — using it poisons
-      // the block's update-graph registration so subsequent state
-      // transitions destroy the block. See module header.
+      // Bare /setblock with no states. These blocks (wire, lamp) have
+      // engine-computed states like redstone_signal — explicitly setting
+      // them in the command pins them to fixed values and breaks
+      // subsequent propagation. The block's own default is fine.
       try {
         dim.runCommand(`setblock ${p.abs.x} ${p.abs.y} ${p.abs.z} ${p.id}`);
       } catch (err) {
@@ -162,24 +163,50 @@ export function executeBuild(spec: ContraptionSpec, anchor: Anchor): BuildResult
       continue;
     }
 
-    dim.setBlockPermutation(p.abs, p.permutation);
-
-    if (STATEFUL_REREGISTER.has(p.id)) {
-      // Re-register stateful redstone blocks in the update graph.
-      // (Their state values are already established by the
-      // setBlockPermutation call above.)
+    if (RUNCOMMAND_ONLY_STATEFUL.has(p.id)) {
+      // /setblock with state values preserved. These blocks carry
+      // directional state (facing, delay, etc.) that must round-trip.
       try {
-        dim.runCommand(`setblock ${p.abs.x} ${p.abs.y} ${p.abs.z} ${p.id}`);
+        dim.runCommand(formatSetblockCommand(p.abs, p.permutation));
       } catch (err) {
-        console.warn(
-          `[rsforge] re-register failed for ${p.id} at ${p.abs.x},${p.abs.y},${p.abs.z}: ${String(err)}`,
+        throw new Error(
+          `runCommand placement failed for ${p.id} at ${p.abs.x},${p.abs.y},${p.abs.z}: ${String(err)}`,
         );
       }
+      continue;
     }
+
+    // Default path: structural and non-redstone blocks (stone, glass,
+    // lever, button, pressure_plate, redstone_block, redstone_torch).
+    dim.setBlockPermutation(p.abs, p.permutation);
   }
 
   const bounds = computeBounds(positions);
   return { placed: placements.length, snapshot, bounds, rotationSteps };
+}
+
+/**
+ * Format a `/setblock` command string that preserves block-state values.
+ * Used for the `runCommand` re-registration of stateful redstone blocks
+ * placed by `setBlockPermutation`. Without preserving the states the
+ * re-register would overwrite the block with its default permutation
+ * (e.g. a piston facing down instead of east), which is worse than the
+ * bug we're working around.
+ */
+function formatSetblockCommand(pos: Vector3, perm: BlockPermutation): string {
+  const states = perm.getAllStates();
+  const keys = Object.keys(states);
+  if (keys.length === 0) {
+    return `setblock ${pos.x} ${pos.y} ${pos.z} ${perm.type.id}`;
+  }
+  const pairs = keys.map((k) => {
+    const v = states[k];
+    if (typeof v === "string")  return `"${k}"="${v}"`;
+    if (typeof v === "boolean") return `"${k}"=${v ? "true" : "false"}`;
+    if (typeof v === "number")  return `"${k}"=${v}`;
+    return `"${k}"="${String(v)}"`;
+  });
+  return `setblock ${pos.x} ${pos.y} ${pos.z} ${perm.type.id} [${pairs.join(",")}]`;
 }
 
 function computeBounds(positions: readonly Vector3[]): { min: Vector3; max: Vector3 } {
