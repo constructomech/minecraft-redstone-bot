@@ -433,66 +433,114 @@ starting the script.
 
 ### Phase 3 — Spec schema + builder
 
+Status: **landed** as a tight MVP. Rotation, ports, tests, in-game
+undo/redo, and `/redo`/`/history` HTTP routes are deferred to Phase 4
+(see below) so this phase could ship behind a working selftest in one
+working session.
+
+Deliverables (Phase 3 scope, as built):
+
+- `pack/src/spec/components.ts`: allow-list of 17 block IDs and their
+  state keys, captured empirically via `tools/discover-states.mjs`.
+- `pack/src/spec/schema.ts`: `ContraptionSpec` types + hand-rolled
+  validator. Pure data, safe in any context. Phase 3 supports
+  `anchor: "absolute"` only and rejects `"player-facing"` with a
+  clear "lands in Phase 4" message.
+- `pack/src/world/snapshot.ts`: capture/restore for a list of block
+  positions. In-memory snapshots; restart-loss is acceptable (Phase 7
+  polish for persistence).
+- `pack/src/world/builder.ts`: `planPlacements`, `executeBuild`.
+  Anchor-absolute coords only; snapshots the pre-build state before
+  any `setBlockPermutation` call.
+- `pack/src/jobs.ts`: in-memory job store for `/undo` lookup.
+- `pack/src/dispatcher.ts`: routes `build` and `undo` commands from
+  the pack's poll loop to the right handler; returns structured
+  results.
+- `pack/src/transport.ts`: extended with a 5-tick (250ms) poll loop
+  (`runTimeout` chain — no overlapping iterations) that fetches
+  pending commands from the daemon, runs them through the dispatcher,
+  and POSTs results back.
+- `tools/forge.mjs` daemon: command queue + `POST /build`,
+  `POST /undo`, `POST /poll`, `POST /result`. Agent requests block
+  up to 30s waiting for the pack to return a result; `awaitingResults`
+  Map keyed by jobId. Status code is `200` on success, `422` on
+  pack-reported failure (validation, no anchor), `504` on timeout.
+- `tools/forge.mjs` CLI: `forge build <spec.json>` and `forge undo
+  [jobId]`.
+- `pack/src/debug.ts`: extended with
+  `rsforge:debug_place_and_dump`, `rsforge:debug_blockat` scriptevents
+  for verifying builds without a player.
+- `tools/discover-states.mjs`: dev-time tool that places each
+  candidate block in a ticking-area chunk and dumps actual states for
+  copying into the components table.
+- `specs/examples/lever-wire-lamp.json`: the canonical Phase 3
+  worked example.
+- Skills `redstone-components-reference` and
+  `contraption-spec-format` populated with the actual schema as built.
+
+Exit criteria: agent posts a 3-block spec (lever → wire → lamp) via
+`POST /build`, blocks appear at the anchor location, `POST /undo`
+restores the prior block state exactly (verified via
+`rsforge:debug_blockat`).
+
+**Verified end-to-end in `npm run selftest`** — 31 of 31 checks PASS
+including pre-build clean state, build with the correct blocks,
+snapshot-precise undo, validation rejection, and "no anchor set"
+rejection.
+
+### Phase 4 — Rotation + ports + tests
+
+Folds in what was originally split between Phase 3 (rotation) and
+Phase 4 (tests). Rationale: rotation depends on the same transform
+math the test runner needs to drive directional inputs, so they ship
+together.
+
 Deliverables:
 
-- `spec/schema.ts`: strict TypeScript types and a runtime validator (zod or
-  hand-rolled) for `ContraptionSpec`.
-- `world/transform.ts`: rotation/mirror math for positions AND for state
-  values of directional blocks (repeater `direction`, observer
-  `facing_direction`, piston `facing_direction`, lever `lever_direction`,
-  button `facing_direction`, etc.). Pure functions, unit-tested in
-  `test/transform.test.ts` without Minecraft.
-- `spec/components.ts`: authoritative table of supported redstone block IDs
-  and the state keys we expose, with allowed values. The agent MUST emit only
-  IDs from this table.
-- `world/builder.ts`: takes `(spec, anchor)` → list of
-  `(absPos, BlockPermutation)` placements; applies them via
-  `Dimension.setBlock` and `Dimension.setBlockPermutation`.
-- `world/snapshot.ts`: before a build, record every block in the footprint so
-  `/rsforge:undo` can restore it.
-- Route: `POST /build` body = `{ spec, dryRun?: boolean }`. Returns
-  `{ jobId, placed, snapshotId }`.
-- Route: `POST /undo` body = `{ jobId? }` (defaults to latest) → restores
-  the snapshot for that job.
-- Route: `POST /redo` body = `{ jobId? }` → replays the build that was
-  most recently undone.
-- In-game slash commands wired to the same handlers:
-  - `/rsforge:undo [jobId]` — undoes the last build, or a named job.
-  - `/rsforge:redo [jobId]` — re-applies the most recently undone build.
-  - `/rsforge:history` — lists recent jobs (id, name, footprint, status).
-  These exist in Phase 3 because the user will want to back out of a bad
-  build immediately, before any of the polish work in Phase 7.
-- Skill: `redstone-components-reference/SKILL.md` — the curated table plus
-  diagrams for each component (powering rules, facing semantics, common
-  gotchas).
-- Skill: `contraption-spec-format/SKILL.md` filled out with the full schema,
-  examples, and the rotation rules.
+- `pack/src/world/transform.ts`: rotation/mirror math for positions
+  AND for state values of directional blocks (repeater
+  `minecraft:cardinal_direction`, observer `minecraft:facing_direction`,
+  piston `facing_direction`, lever `lever_direction`, button
+  `facing_direction`, torch `torch_facing_direction`). Pure functions.
+- `test/transform.test.ts`: host-side `node:test` runner with truth
+  tables — runs without Minecraft, instantly. Wired into
+  `npm test`.
+- `pack/src/spec/schema.ts` updated: `anchor: "player-facing"`
+  becomes valid; builder rotates spec coords + directional state
+  values around Y based on anchor.facing.
+- `pack/src/spec/ports.ts`: named `inputs` (lever, button,
+  pressure_plate, redstone_block) and `outputs` (lamp, piston,
+  comparator, observer) with their positions. The spec adds
+  `ports: { inputs: {...}, outputs: {...} }`.
+- `pack/src/world/probes.ts`: readers for each output kind — lamp
+  on/off (`redstone_lamp` vs `lit_redstone_lamp`), piston extension
+  (check head block at facing offset), comparator `output_signal`
+  analog, observer pulse (sample over a window).
+- `pack/src/test/runner.ts`: executes a test's steps using
+  `system.runTimeout` for `wait_ticks`. For `set` actions: lever
+  toggles via state mutation; button "press" via brief
+  redstone-block placement; redstone-block toggles for analog inputs.
+- Daemon: `POST /test` body = `{ specRef | spec, testName?: string }`
+  → `{ results: [{ name, pass, observed, expected, error? }] }`.
+- Daemon: `POST /redo` body = `{ jobId? }` → replays the most recently
+  undone build.
+- Daemon: `GET /world?bounds=[x1,y1,z1,x2,y2,z2]` → compact dump of
+  block IDs and key states for debugging.
+- In-game slash commands wired to the pack-side job store (which the
+  daemon's `/undo` already drives):
+  - `/rsforge:undo [jobId]`
+  - `/rsforge:redo [jobId]`
+  - `/rsforge:history`
+- Skill: `contraption-testing/SKILL.md` — how to phrase `tests`, why
+  we wait N ticks, how to detect race conditions.
+- Selftest extension: builds a rotated lever-wire-lamp in each of the
+  4 cardinal facings, verifies block positions and directional
+  states.
 
-Exit criteria: agent posts a hand-written 3-block spec
-(lever → wire → lamp), it appears correctly oriented, `undo` removes it.
-
-### Phase 4 — Test engine
-
-Deliverables:
-
-- `test/probes.ts`: readers for each output kind — lamp on/off
-  (`redstone_lamp` vs `lit_redstone_lamp`), piston extension (check the head
-  block at the facing offset), comparator `output_signal` analog, observer
-  pulse (sample over a window).
-- `test/runner.ts`: executes a test's steps using `system.runTimeout` for
-  `wait_ticks`. For `set` actions: lever toggles via state mutation; button
-  "press" via brief redstone-block placement; redstone-block toggles for
-  analog inputs.
-- Route: `POST /test` body = `{ specRef | spec, testName?: string }` →
-  `{ results: [{ name, pass, observed, expected, error? }] }`.
-- Route: `GET /world?bounds=[x1,y1,z1,x2,y2,z2]` → compact RLE-ish dump of
-  block IDs plus key states, capped at a size limit. Used for debugging diffs.
-- Skill: `contraption-testing/SKILL.md` — how to phrase `tests`, why we wait
-  N ticks, how to detect race conditions.
-
-Exit criteria: a saved spec for "AND gate" passes its declared tests via
-`POST /test`, and a deliberately broken spec fails with the right `observed`
-values.
+Exit criteria: a saved spec for "AND gate" with `anchor: "player-facing"`
+and a `tests` block passes via `POST /test`, both when the anchor
+faces north and when it faces east (proves rotation works), and a
+deliberately broken spec fails with the right `observed` values.
 
 ### Phase 5 — Agent operating loop
 

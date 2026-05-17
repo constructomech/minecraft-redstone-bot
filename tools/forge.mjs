@@ -7,17 +7,20 @@
  *   node tools/forge.mjs health            # GET  /health
  *   node tools/forge.mjs anchor            # GET  /anchor
  *   node tools/forge.mjs echo <msg>        # POST /echo
+ *   node tools/forge.mjs build <spec.json> # POST /build (waits for pack to apply)
+ *   node tools/forge.mjs undo [jobId]      # POST /undo (waits for pack to apply)
  *
- * The daemon listens on FORGE_PORT (default 33000), accepts
- * authenticated heartbeats from the pack, and exposes the cached state
- * to the agent / CLI. The CLI is just a thin wrapper that calls the
- * daemon over HTTP.
+ * The daemon listens on FORGE_PORT (default 33000). The pack
+ * heartbeats outbound to it (state) AND short-polls for queued
+ * commands every ~250ms. Agent commands enqueue via /build, /undo;
+ * the daemon holds the agent's request until the pack reports a
+ * result, then forwards it back.
  *
- * Token + URL are read from .env at the repo root (created by
- * tools/pack-deploy.ps1 on first deploy).
+ * Token + URL are read from .env at the repo root.
  */
 import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -56,16 +59,20 @@ switch (cmd) {
   case "health":  await cliCall("GET", "/health"); break;
   case "anchor":  await cliCall("GET", "/anchor"); break;
   case "echo":    await cliCall("POST", "/echo", process.argv.slice(3).join(" ")); break;
+  case "build":   await cliBuild(process.argv[3]); break;
+  case "undo":    await cliCall("POST", "/undo", JSON.stringify(process.argv[3] ? { jobId: process.argv[3] } : {}), "application/json"); break;
   case "help":
   default:        printHelp(); process.exit(cmd === "help" ? 0 : 2);
 }
 
 function printHelp() {
   console.log(`Usage:
-  node tools/forge.mjs daemon            run the broker daemon
-  node tools/forge.mjs health            GET  /health
-  node tools/forge.mjs anchor            GET  /anchor
-  node tools/forge.mjs echo <message>    POST /echo
+  node tools/forge.mjs daemon              run the broker daemon
+  node tools/forge.mjs health              GET  /health
+  node tools/forge.mjs anchor              GET  /anchor
+  node tools/forge.mjs echo <message>      POST /echo
+  node tools/forge.mjs build <spec.json>   POST /build  (blocks up to 30s)
+  node tools/forge.mjs undo [jobId]        POST /undo   (blocks up to 30s)
 
 Reads FORGE_PORT, FORGE_URL, FORGE_TOKEN from .env at the repo root.`);
 }
@@ -75,6 +82,7 @@ Reads FORGE_PORT, FORGE_URL, FORGE_TOKEN from .env at the repo root.`);
 // ──────────────────────────────────────────────────────────────
 
 function runDaemon() {
+  /** Cached pack state from heartbeats. */
   const state = {
     anchor: null,
     packVersion: null,
@@ -82,6 +90,29 @@ function runDaemon() {
     heartbeatCount: 0,
     startedAt: new Date().toISOString(),
   };
+
+  /** FIFO queue of commands waiting for the pack to poll for them. */
+  const pendingCommands = [];
+
+  /** Map<jobId, { resolve, reject, timer, agentReq }> for in-flight agent requests. */
+  const awaiting = new Map();
+
+  const AGENT_REQUEST_TIMEOUT_MS = 30_000;
+
+  function enqueueCommand(type, payload) {
+    return new Promise((resolve, reject) => {
+      const jobId = randomUUID();
+      const timer = setTimeout(() => {
+        awaiting.delete(jobId);
+        // also try to remove from pending queue if it never got picked up
+        const idx = pendingCommands.findIndex((c) => c.jobId === jobId);
+        if (idx >= 0) pendingCommands.splice(idx, 1);
+        reject(new Error(`pack did not return a result for ${type} within ${AGENT_REQUEST_TIMEOUT_MS}ms`));
+      }, AGENT_REQUEST_TIMEOUT_MS);
+      awaiting.set(jobId, { resolve, reject, timer });
+      pendingCommands.push({ jobId, type, payload });
+    });
+  }
 
   const server = createServer(async (req, res) => {
     const reqStart = Date.now();
@@ -114,6 +145,8 @@ function runDaemon() {
         finish(status);
       };
 
+      // ---- pack → daemon ----
+
       if (req.method === "POST" && url.pathname === "/heartbeat") {
         let parsed;
         try { parsed = JSON.parse(body || "{}"); }
@@ -125,6 +158,32 @@ function runDaemon() {
         return send(200, { ok: true });
       }
 
+      if (req.method === "POST" && url.pathname === "/poll") {
+        // Hand all pending commands to the pack at once and clear queue.
+        const commands = pendingCommands.splice(0, pendingCommands.length);
+        return send(200, { commands });
+      }
+
+      if (req.method === "POST" && url.pathname === "/result") {
+        let parsed;
+        try { parsed = JSON.parse(body || "{}"); }
+        catch { return send(400, { error: "invalid json" }); }
+        const { jobId, result } = parsed;
+        if (!jobId) return send(400, { error: "missing jobId" });
+        const entry = awaiting.get(jobId);
+        if (!entry) {
+          // late result (timeout already fired, or duplicate). Log and ack.
+          console.warn(`/result for unknown jobId ${jobId}; agent already moved on`);
+          return send(200, { ok: true, note: "no pending agent request" });
+        }
+        clearTimeout(entry.timer);
+        awaiting.delete(jobId);
+        entry.resolve(result);
+        return send(200, { ok: true });
+      }
+
+      // ---- agent → daemon ----
+
       if (req.method === "GET" && url.pathname === "/health") {
         return send(200, {
           ok: true,
@@ -133,6 +192,8 @@ function runDaemon() {
           lastHeartbeat: state.lastHeartbeat,
           heartbeatCount: state.heartbeatCount,
           daemonStartedAt: state.startedAt,
+          pendingCommands: pendingCommands.length,
+          awaitingResults: awaiting.size,
         });
       }
 
@@ -142,6 +203,35 @@ function runDaemon() {
 
       if (req.method === "POST" && url.pathname === "/echo") {
         return send(200, { echo: body });
+      }
+
+      if (req.method === "POST" && url.pathname === "/build") {
+        let payload;
+        try { payload = JSON.parse(body || "{}"); }
+        catch { return send(400, { error: "invalid json" }); }
+        if (!payload.spec) return send(400, { error: "body must be { spec: <ContraptionSpec> }" });
+        try {
+          const result = await enqueueCommand("build", { spec: payload.spec });
+          const status = result?.ok === false ? 422 : 200;
+          return send(status, result);
+        } catch (err) {
+          return send(504, { ok: false, error: String(err.message ?? err) });
+        }
+      }
+
+      if (req.method === "POST" && url.pathname === "/undo") {
+        let payload = {};
+        if (body.trim()) {
+          try { payload = JSON.parse(body); }
+          catch { return send(400, { error: "invalid json" }); }
+        }
+        try {
+          const result = await enqueueCommand("undo", { jobId: payload.jobId });
+          const status = result?.ok === false ? 422 : 200;
+          return send(status, result);
+        } catch (err) {
+          return send(504, { ok: false, error: String(err.message ?? err) });
+        }
       }
 
       send(404, { error: "not found", path: url.pathname });
@@ -163,9 +253,33 @@ function runDaemon() {
 // CLI
 // ──────────────────────────────────────────────────────────────
 
-async function cliCall(method, route, body) {
+async function cliBuild(specPath) {
+  if (!specPath) {
+    console.error("forge build: missing <spec.json> path");
+    process.exit(2);
+  }
+  let raw;
+  try {
+    raw = await readFile(path.resolve(repoRoot, specPath), "utf8");
+  } catch (err) {
+    console.error(`forge build: cannot read ${specPath}: ${err.message}`);
+    process.exit(2);
+  }
+  let spec;
+  try {
+    spec = JSON.parse(raw);
+  } catch (err) {
+    console.error(`forge build: ${specPath} is not valid JSON: ${err.message}`);
+    process.exit(2);
+  }
+  await cliCall("POST", "/build", JSON.stringify({ spec }), "application/json");
+}
+
+async function cliCall(method, route, body, contentType) {
   const headers = { "X-Forge-Token": TOKEN };
-  if (body !== undefined) headers["Content-Type"] = "application/json";
+  if (body !== undefined) {
+    headers["Content-Type"] = contentType ?? (method === "POST" ? "text/plain" : "application/json");
+  }
 
   let res;
   try {

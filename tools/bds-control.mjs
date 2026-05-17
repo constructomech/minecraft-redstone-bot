@@ -125,15 +125,24 @@ export class BdsProcess {
 
   /**
    * Wait until a log line matches `regex`. Searches existing buffer
-   * first, then watches new output. Rejects on timeout or BDS exit.
+   * first (from `fromIndex` if given), then watches new output.
+   * Rejects on timeout or BDS exit.
+   *
+   * @param {RegExp} regex
+   * @param {object} [opts]
+   * @param {number} [opts.timeoutMs=5000]
+   * @param {number} [opts.fromIndex=0]  - only match content at/after this byte offset.
+   *   Pass `bds.log.length` BEFORE issuing a command if you want to
+   *   match only the response to that specific command.
    */
-  waitForLog(regex, { timeoutMs = 5000 } = {}) {
+  waitForLog(regex, { timeoutMs = 5000, fromIndex = 0 } = {}) {
     return new Promise((resolve, reject) => {
       // Quick scan of already-seen log first.
-      const m = regex.exec(this.log);
+      const haystack = fromIndex > 0 ? this.log.slice(fromIndex) : this.log;
+      const m = regex.exec(haystack);
       if (m) return resolve(m);
 
-      const waiter = { regex, resolve, reject, timer: null };
+      const waiter = { regex, resolve, reject, timer: null, fromIndex };
       waiter.timer = setTimeout(() => {
         const idx = this._waiters.indexOf(waiter);
         if (idx >= 0) this._waiters.splice(idx, 1);
@@ -192,7 +201,8 @@ export class BdsProcess {
     // Try waiters against the full accumulated log so multi-line
     // regexes work; callers usually pass single-line patterns.
     for (const w of [...this._waiters]) {
-      const m = w.regex.exec(this.log);
+      const haystack = w.fromIndex > 0 ? this.log.slice(w.fromIndex) : this.log;
+      const m = w.regex.exec(haystack);
       if (m) {
         clearTimeout(w.timer);
         const idx = this._waiters.indexOf(w);

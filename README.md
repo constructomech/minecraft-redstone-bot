@@ -43,16 +43,15 @@ Agent:  → drafts a ContraptionSpec
 
 ## Status
 
-Phase 2.5. The pack registers `/rsforge:hello`, `/rsforge:anchor`,
-`/rsforge:anchor_clear`, and `/rsforge:anchor_show`, persists the
-anchor via world dynamic properties, and heartbeats its state every
-~2s to a host-side Node daemon (`tools/forge.mjs`). The daemon
-exposes an authenticated HTTP API (`/health`, `/anchor`, `/echo`) for
-the agent and the CLI. An end-to-end self-test harness
-(`npm run selftest`) drives the pack via `/scriptevent` from BDS
-stdin and verifies everything end-to-end in ~8 seconds without a
-player. The full LLM-driven build loop (Phase 3+) is not wired yet.
-See [PLAN.md](PLAN.md) for the phased roadmap.
+Phase 3. The pack now has a full spec → build → undo pipeline.
+Agent (or CLI) POSTs a `ContraptionSpec` to `/build`, the daemon
+queues it, the pack picks it up on its next 250ms poll, snapshots
+the target region, places the blocks at the anchor, and reports
+results back. `/undo` restores the snapshot precisely. 17-component
+allow-list captured empirically from BDS; spec validation is strict.
+Rotation, ports, and tests land in Phase 4. The full LLM-driven
+build loop comes online once those land. See [PLAN.md](PLAN.md) for
+the phased roadmap.
 
 ## Requirements
 
@@ -98,7 +97,15 @@ node tools/forge.mjs health
 
 Connect from your Bedrock client to `127.0.0.1:25565`. Set an anchor
 with `/rsforge:anchor`. Within 2 seconds, `node tools/forge.mjs anchor`
-on the host shows it.
+on the host shows it. Then build a sample contraption:
+
+```pwsh
+node tools/forge.mjs build specs/examples/lever-wire-lamp.json
+# { "ok": true, "data": { "jobId": "...", "placed": 3, "bounds": {...} } }
+
+node tools/forge.mjs undo
+# { "ok": true, "data": { "jobId": "...", "restored": 3 } }
+```
 
 ### Self-test (no player needed)
 
@@ -140,18 +147,31 @@ package.json               # build tooling (esbuild) + @minecraft/server types
 pack/                      # behavior pack source (Phase 1+)
   ├── manifest.json
   ├── src/                 # TypeScript source
+  │   ├── main.ts
+  │   ├── anchor.ts        # anchor state + dynamic-property persistence
+  │   ├── debug.ts         # scriptevent test hooks (gated by debug_enabled)
+  │   ├── dispatcher.ts    # build/undo command handlers
+  │   ├── jobs.ts          # in-memory job store for undo
+  │   ├── transport.ts     # outbound HTTP: heartbeat + command poll
+  │   ├── commands/        # custom slash commands
+  │   ├── spec/            # ContraptionSpec types, validator, components allow-list
+  │   └── world/           # builder + snapshot
   ├── scripts/             # bundled output (gitignored)
   └── tsconfig.json
 tools/                     # PowerShell + Node helpers
   ├── bds-install.ps1      # download + install BDS
   ├── bds-run.ps1          # launch the installed BDS
+  ├── bds-control.mjs      # programmatic BDS spawn + stdin/stdout (used by selftest)
   ├── enable-experiments.mjs   # NBT-edit level.dat to enable Beta APIs
   ├── pack-build.mjs       # esbuild bundle
   ├── pack-deploy.ps1      # copy pack to BDS, enable on world, deploy config + token
-  └── forge.mjs            # daemon + CLI (HTTP broker between agent and pack)
-specs/                     # saved ContraptionSpec JSON (Phase 3+)
+  ├── forge.mjs            # daemon + CLI (HTTP broker between agent and pack)
+  ├── selftest.mjs         # end-to-end test harness
+  └── discover-states.mjs  # dev tool: probe block state schemas from BDS
+specs/                     # ContraptionSpec JSON
+  └── examples/            # ready-to-deploy sample contraptions
 patterns/                  # reusable sub-contraptions (Phase 6)
-test/                      # host-side unit tests (Node, no Minecraft)
+test/                      # host-side unit tests (Node, no Minecraft; Phase 4)
 ```
 
 ## Cross-tool conventions

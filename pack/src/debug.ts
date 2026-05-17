@@ -15,7 +15,7 @@
  * `debug_state` writes the current anchor JSON to the BDS console so
  * the harness can match it from stdout if it needs to.
  */
-import { system } from "@minecraft/server";
+import { system, world } from "@minecraft/server";
 import { variables } from "@minecraft/server-admin";
 import {
   clearAnchor,
@@ -54,6 +54,12 @@ function handle(id: string, message: string): void {
         break;
       case "rsforge:debug_state":
         debugState();
+        break;
+      case "rsforge:debug_place_and_dump":
+        debugPlaceAndDump(message);
+        break;
+      case "rsforge:debug_blockat":
+        debugBlockAt(message);
         break;
       default:
         // Other rsforge:* scriptevents are not ours; ignore.
@@ -110,4 +116,72 @@ function debugClearAnchor(): void {
 function debugState(): void {
   const a = getAnchor();
   console.log(`[rsforge] debug_state: anchor=${JSON.stringify(a)}`);
+}
+
+/**
+ * Place a block at a fixed scratch location, then read it back and
+ * log its typeId + every state key/value. Used during component
+ * onboarding to confirm the actual Bedrock state schema.
+ *
+ * Payload: "<x> <y> <z> <blockId>"
+ *   e.g. "1000 64 1000 minecraft:lever"
+ */
+function debugPlaceAndDump(message: string): void {
+  const parts = message.trim().split(/\s+/);
+  if (parts.length < 4) {
+    console.error(`[rsforge] debug_place_and_dump: expected "<x> <y> <z> <id>"`);
+    return;
+  }
+  const [xs, ys, zs, blockId] = parts as [string, string, string, string];
+  const x = Number.parseInt(xs, 10);
+  const y = Number.parseInt(ys, 10);
+  const z = Number.parseInt(zs, 10);
+  const dim = world.getDimension("minecraft:overworld");
+  try {
+    dim.setBlockType({ x, y, z }, blockId);
+    const block = dim.getBlock({ x, y, z });
+    if (!block) {
+      console.log(`[rsforge] debug_place_and_dump: block at ${x},${y},${z} is null`);
+      return;
+    }
+    const p = block.permutation;
+    const allStates = p.getAllStates();
+    console.log(
+      `[rsforge] debug_place_and_dump: typeId=${block.typeId} states=${JSON.stringify(allStates)}`,
+    );
+  } catch (err) {
+    console.error(`[rsforge] debug_place_and_dump failed: ${String(err)}`);
+  }
+}
+
+/**
+ * Read a block at absolute coords and log its typeId + states.
+ * Used by the selftest to verify built contraptions.
+ *
+ * Payload: "<x> <y> <z> [dim]"
+ */
+function debugBlockAt(message: string): void {
+  const parts = message.trim().split(/\s+/);
+  if (parts.length < 3) {
+    console.error(`[rsforge] debug_blockat: expected "<x> <y> <z> [dim]"`);
+    return;
+  }
+  const [xs, ys, zs, dimStr] = parts as [string, string, string, string?];
+  const x = Number.parseInt(xs, 10);
+  const y = Number.parseInt(ys, 10);
+  const z = Number.parseInt(zs, 10);
+  const dim = world.getDimension(dimStr ?? "minecraft:overworld");
+  try {
+    const block = dim.getBlock({ x, y, z });
+    if (!block) {
+      console.log(`[rsforge] debug_blockat: ${x},${y},${z} -> null (unloaded?)`);
+      return;
+    }
+    const states = block.permutation.getAllStates();
+    console.log(
+      `[rsforge] debug_blockat: ${x},${y},${z} -> ${block.typeId} ${JSON.stringify(states)}`,
+    );
+  } catch (err) {
+    console.error(`[rsforge] debug_blockat failed: ${String(err)}`);
+  }
 }

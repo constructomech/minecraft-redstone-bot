@@ -117,6 +117,13 @@ try {
   pass("BDS booted and reached 'Server started.'");
   diag(`install: ${bds.installDir}`);
 
+  // Phase 3 needs chunks loaded to set/read blocks. With no player,
+  // chunks unload by default; add a ticking area near spawn so the
+  // build site stays live.
+  bds.send("tickingarea add 0 0 0 31 255 31 rsforge_selftest");
+  await new Promise((r) => setTimeout(r, 1000)); // tickingarea is fire-and-forget
+  pass("ticking area added at spawn");
+
   await bds.waitForLog(/\[Scripting\] \[rsforge\] startup: commands registered/, { timeoutMs: 15000 });
   pass("pack startup ran (commands registered)");
 
@@ -217,6 +224,84 @@ try {
     predicate: (h) => h.anchor === null,
   });
   pass(`anchor cleared (heartbeatCount=${cleared.heartbeatCount})`);
+
+  // ---------- Phase 3: build a spec via /build, verify in world, undo ----------
+
+  console.log("\nBuilding a 3-block lever -> wire -> lamp spec...");
+  // Anchor at (4, 70, 4) overworld — inside the ticking area we added.
+  bds.send("scriptevent rsforge:debug_setanchor 4 70 4 north");
+  await bds.waitForLog(/debug_setanchor: minecraft:overworld 4 70 4 north/, { timeoutMs: 5000 });
+  await pollHealth({
+    timeoutMs: 6000,
+    predicate: (h) => h.anchor && h.anchor.dimension === "minecraft:overworld" && h.anchor.pos.x === 4,
+  });
+
+  // Clear the build site so pre-build state is deterministic.
+  // (Selftest reruns and discover-states.mjs both leave stuff behind.)
+  for (const x of [4, 5, 6]) bds.send(`setblock ${x} 70 4 air`);
+  await new Promise((r) => setTimeout(r, 300));
+  for (const x of [4, 5, 6]) await checkBlock(bds, x, 70, 4, "minecraft:air");
+
+  const testSpec = {
+    name: "selftest-circuit",
+    footprint: { size: [3, 1, 1] },
+    anchor: "absolute",
+    blocks: [
+      { at: [0, 0, 0], id: "minecraft:lever" },
+      { at: [1, 0, 0], id: "minecraft:redstone_wire" },
+      { at: [2, 0, 0], id: "minecraft:redstone_lamp" },
+    ],
+  };
+
+  const buildRes = await callJson("POST", "/build", { spec: testSpec });
+  if (buildRes.ok && buildRes.data?.placed === 3 && buildRes.data?.jobId) {
+    pass(`build placed 3 blocks (jobId=${buildRes.data.jobId.slice(0, 8)}...)`);
+    diag(`bounds=${JSON.stringify(buildRes.data.bounds)}`);
+  } else {
+    fail("build", JSON.stringify(buildRes));
+    throw new Error("build failed; aborting downstream checks");
+  }
+
+  // Verify each block landed where expected
+  await checkBlock(bds, 4, 70, 4, "minecraft:lever");
+  await checkBlock(bds, 5, 70, 4, "minecraft:redstone_wire");
+  await checkBlock(bds, 6, 70, 4, "minecraft:redstone_lamp");
+
+  // ---------- undo ----------
+
+  console.log("\nUndoing the build (snapshot must restore the air we set)...");
+  const undoRes = await callJson("POST", "/undo", {});
+  if (undoRes.ok && undoRes.data?.restored === 3) {
+    pass(`undo restored 3 blocks`);
+  } else {
+    fail("undo", JSON.stringify(undoRes));
+  }
+
+  await checkBlock(bds, 4, 70, 4, "minecraft:air");
+  await checkBlock(bds, 5, 70, 4, "minecraft:air");
+  await checkBlock(bds, 6, 70, 4, "minecraft:air");
+
+  // ---------- validation rejection ----------
+
+  console.log("\nVerifying spec validation rejects garbage...");
+  const badRes = await callJson("POST", "/build", { spec: { name: "bad" } });
+  if (badRes.ok === false && Array.isArray(badRes.errors) && badRes.errors.length > 0) {
+    pass(`bad spec rejected (${badRes.errors.length} validation errors)`);
+    diag(`first error: ${badRes.errors[0].path} - ${badRes.errors[0].message}`);
+  } else {
+    fail("validation rejection", JSON.stringify(badRes));
+  }
+
+  console.log("\nVerifying build without anchor is rejected...");
+  bds.send("scriptevent rsforge:debug_clearanchor");
+  await bds.waitForLog(/debug_clearanchor: cleared/, { timeoutMs: 5000, fromIndex: bds.log.length - 1 });
+  await pollHealth({ timeoutMs: 6000, predicate: (h) => h.anchor === null });
+  const noAnchorRes = await callJson("POST", "/build", { spec: testSpec });
+  if (noAnchorRes.ok === false && /no anchor/.test(noAnchorRes.error ?? "")) {
+    pass("build without anchor rejected with descriptive error");
+  } else {
+    fail("no-anchor rejection", JSON.stringify(noAnchorRes));
+  }
 
   // ---------- echo round-trip via CLI ----------
 
@@ -342,6 +427,36 @@ async function getJson(route) {
   });
   if (!res.ok) throw new Error(`${route} -> HTTP ${res.status}`);
   return res.json();
+}
+
+async function callJson(method, route, body) {
+  const headers = { "X-Forge-Token": FORGE_TOKEN, "Content-Type": "application/json" };
+  const res = await fetch(`${FORGE_URL}${route}`, {
+    method,
+    headers,
+    body: JSON.stringify(body),
+  });
+  const text = await res.text();
+  try { return JSON.parse(text); }
+  catch { return { ok: false, error: `non-JSON response: ${text.slice(0, 200)}` }; }
+}
+
+async function checkBlock(bds, x, y, z, expectedId) {
+  const cursor = bds.log.length;
+  bds.send(`scriptevent rsforge:debug_blockat ${x} ${y} ${z}`);
+  try {
+    const m = await bds.waitForLog(
+      new RegExp(`debug_blockat: ${x},${y},${z} -> (\\S+) `),
+      { timeoutMs: 5000, fromIndex: cursor },
+    );
+    if (m[1] === expectedId) {
+      pass(`block at ${x},${y},${z} is ${expectedId}`);
+    } else {
+      fail(`block at ${x},${y},${z}`, `expected ${expectedId} but got ${m[1]}`);
+    }
+  } catch (err) {
+    fail(`block at ${x},${y},${z}`, String(err.message ?? err));
+  }
 }
 
 /** Poll /health until predicate is true. */
