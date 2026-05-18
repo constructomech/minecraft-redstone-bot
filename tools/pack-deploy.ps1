@@ -220,7 +220,8 @@ FORGE_TOKEN=$forgeToken
 $packAllowedModules = @(
     '@minecraft/server',
     '@minecraft/server-net',
-    '@minecraft/server-admin'
+    '@minecraft/server-admin',
+    '@minecraft/server-gametest'
 )
 
 Write-Step 'Writing forge variables + secrets + permissions for the pack'

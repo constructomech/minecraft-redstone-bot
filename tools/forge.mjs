@@ -57,7 +57,14 @@ if (!TOKEN && cmd !== "help") {
 switch (cmd) {
   case "daemon":  runDaemon();           break;
   case "health":  await cliCall("GET", "/health"); break;
-  case "anchor":  await cliCall("GET", "/anchor"); break;
+  case "anchor":
+    if (process.argv.length > 3) {
+      // forge anchor <x> <y> <z> <facing> [dim]  -> POST /anchor
+      await cliSetAnchor(process.argv.slice(3));
+    } else {
+      await cliCall("GET", "/anchor");
+    }
+    break;
   case "echo":    await cliCall("POST", "/echo", process.argv.slice(3).join(" ")); break;
   case "build":   await cliBuild(process.argv[3]); break;
   case "undo":    await cliCall("POST", "/undo", JSON.stringify(process.argv[3] ? { jobId: process.argv[3] } : {}), "application/json"); break;
@@ -72,13 +79,16 @@ function printHelp() {
   console.log(`Usage:
   node tools/forge.mjs daemon                      run the broker daemon
   node tools/forge.mjs health                      GET  /health
-  node tools/forge.mjs anchor                      GET  /anchor
+  node tools/forge.mjs anchor                      GET  /anchor (read current)
+  node tools/forge.mjs anchor <x> <y> <z> <facing> [dim]  POST /anchor (set)
   node tools/forge.mjs echo <message>              POST /echo
   node tools/forge.mjs build <spec.json>           POST /build  (blocks up to 30s)
   node tools/forge.mjs undo [jobId]                POST /undo
   node tools/forge.mjs redo [jobId]                POST /redo
   node tools/forge.mjs test [jobId] [test]         POST /test
   node tools/forge.mjs world <x1> <y1> <z1> <x2> <y2> <z2>   GET /world?bounds=...
+
+facing must be one of: north, south, east, west
 
 Reads FORGE_PORT, FORGE_URL, FORGE_TOKEN from .env at the repo root.`);
 }
@@ -205,6 +215,29 @@ function runDaemon() {
 
       if (req.method === "GET" && url.pathname === "/anchor") {
         return send(200, state.anchor);
+      }
+
+      if (req.method === "POST" && url.pathname === "/anchor") {
+        let payload;
+        try { payload = JSON.parse(body || "{}"); }
+        catch { return send(400, { error: "invalid json" }); }
+        if (typeof payload.x !== "number" || typeof payload.y !== "number" || typeof payload.z !== "number") {
+          return send(400, { error: "body must be { x, y, z, facing, dimension? } with numeric x/y/z" });
+        }
+        if (typeof payload.facing !== "string") {
+          return send(400, { error: "facing must be a string ('north'|'south'|'east'|'west')" });
+        }
+        try {
+          const result = await enqueueCommand("setanchor", {
+            x: payload.x, y: payload.y, z: payload.z,
+            facing: payload.facing,
+            dimension: payload.dimension,
+          });
+          const status = result?.ok === false ? 422 : 200;
+          return send(status, result);
+        } catch (err) {
+          return send(504, { ok: false, error: String(err.message ?? err) });
+        }
       }
 
       if (req.method === "POST" && url.pathname === "/echo") {
@@ -335,6 +368,25 @@ function runDaemon() {
 // ──────────────────────────────────────────────────────────────
 // CLI
 // ──────────────────────────────────────────────────────────────
+
+async function cliSetAnchor(args) {
+  if (args.length < 4) {
+    console.error("forge anchor: need <x> <y> <z> <facing> [dim]");
+    process.exit(2);
+  }
+  const x = Number.parseInt(args[0], 10);
+  const y = Number.parseInt(args[1], 10);
+  const z = Number.parseInt(args[2], 10);
+  const facing = args[3];
+  const dimension = args[4];
+  if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) {
+    console.error(`forge anchor: x/y/z must be integers, got '${args[0]} ${args[1]} ${args[2]}'`);
+    process.exit(2);
+  }
+  const body = { x, y, z, facing };
+  if (dimension) body.dimension = dimension;
+  await cliCall("POST", "/anchor", JSON.stringify(body), "application/json");
+}
 
 async function cliBuild(specPath) {
   if (!specPath) {

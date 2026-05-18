@@ -7,7 +7,7 @@
  * Async since /test uses system.runTimeout between steps.
  */
 import { world } from "@minecraft/server";
-import { getAnchor } from "./anchor.js";
+import { getAnchor, setAnchor, type Facing } from "./anchor.js";
 import { getJob, latest, latestUndoable, latestUndone, listJobs, recordJob } from "./jobs.js";
 import { validateSpec } from "./spec/schema.js";
 import { runAllTests, runTest } from "./test/runner.js";
@@ -19,7 +19,8 @@ export type Command =
   | { jobId: string; type: "undo";  payload: { jobId?: string } }
   | { jobId: string; type: "redo";  payload: { jobId?: string } }
   | { jobId: string; type: "test";  payload: { jobId?: string; testName?: string } }
-  | { jobId: string; type: "world"; payload: { bounds: [number, number, number, number, number, number]; dimension?: string } };
+  | { jobId: string; type: "world"; payload: { bounds: [number, number, number, number, number, number]; dimension?: string } }
+  | { jobId: string; type: "setanchor"; payload: { x: number; y: number; z: number; facing: string; dimension?: string } };
 
 export type CommandResult =
   | { ok: true; data: unknown }
@@ -33,6 +34,7 @@ export async function dispatch(cmd: Command): Promise<CommandResult> {
       case "redo":  return handleRedo(cmd.payload, cmd.jobId);
       case "test":  return await handleTest(cmd.payload);
       case "world": return handleWorld(cmd.payload);
+      case "setanchor": return handleSetAnchor(cmd.payload);
       default: {
         const t = (cmd as { type?: unknown }).type;
         return { ok: false, error: `unknown command type: ${String(t)}` };
@@ -232,6 +234,33 @@ function handleWorld(payload: { bounds: [number, number, number, number, number,
       blocks,
     },
   };
+}
+
+// ---------- setanchor ----------
+
+const VALID_FACINGS: readonly string[] = ["north", "south", "east", "west"];
+
+function handleSetAnchor(payload: { x: number; y: number; z: number; facing: string; dimension?: string }): CommandResult {
+  const { x, y, z, facing } = payload;
+  if (!Number.isInteger(x) || !Number.isInteger(y) || !Number.isInteger(z)) {
+    return { ok: false, error: `setanchor: x,y,z must be integers (got ${x},${y},${z})` };
+  }
+  if (!VALID_FACINGS.includes(facing)) {
+    return { ok: false, error: `setanchor: facing must be one of ${VALID_FACINGS.join("|")} (got '${facing}')` };
+  }
+  const dimension = payload.dimension ?? "minecraft:overworld";
+  try { world.getDimension(dimension); }
+  catch { return { ok: false, error: `setanchor: unknown dimension '${dimension}'` }; }
+
+  setAnchor({
+    dimension,
+    pos: { x, y, z },
+    facing: facing as Facing,
+    setBy: { name: "agent", id: "agent" },
+    setAt: Date.now(),
+  });
+  console.log(`[rsforge] setanchor (agent): ${dimension} ${x} ${y} ${z} ${facing}`);
+  return { ok: true, data: { dimension, pos: { x, y, z }, facing } };
 }
 
 // ---------- test ----------

@@ -52,7 +52,7 @@ export async function runTest(
           if (!port) {
             return failBecause(test, i, `set: unknown input port '${portName}'`);
           }
-          driveInput(dim, resolvePortPos(port, job.anchor, job.rotationSteps), port.kind, value);
+          await driveInput(dim, resolvePortPos(port, job.anchor, job.rotationSteps), port.kind, value);
         }
       } else if ("wait_ticks" in step) {
         if (step.wait_ticks > 0) await waitTicks(step.wait_ticks);

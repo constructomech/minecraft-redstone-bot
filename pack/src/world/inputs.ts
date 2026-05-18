@@ -1,27 +1,36 @@
 /**
  * Input drivers: mutate the world to "press" a port the test runner is
- * driving. Drivers are sync (mutations apply this tick); the runner is
- * responsible for following each set with a wait_ticks so propagation
- * has time to settle.
+ * driving. Async — the runner must `await driveInput` so propagation
+ * has time to settle between steps.
  *
- * IMPORTANT: programmatic Script API placement (setBlockType /
- * setBlockPermutation) does NOT reliably fire the neighbor-block-update
- * events that redstone propagation relies on. See:
- *   bugs/script-api-setblock-no-neighbor-redstone-update.md
- *   bugs/script-api-lever-state-mutation-no-update.md
- * The workaround in these drivers is `dimension.runCommand("setblock ...")`
- * which goes through the same path as a player-issued command and fires
- * updates correctly.
+ * Two strategies:
+ *
+ *   1) For LEVER and BUTTON we use a transient SimulatedPlayer to
+ *      right-click the block. A real interact() is the only reliable
+ *      way to make a placed lever's signal propagate to adjacent
+ *      wire/pistons — programmatic setblock toggling does NOT fire
+ *      the neighbor-update events. See:
+ *        bugs/script-api-lever-state-mutation-no-update.md
+ *
+ *   2) For REDSTONE_BLOCK we swap to air (off) or redstone_block (on)
+ *      via dim.runCommand("setblock ..."). The /setblock command goes
+ *      through the same path as a player-issued command and fires
+ *      neighbor updates correctly.
+ *
+ *   3) PRESSURE_PLATE uses /setblock to mutate the redstone_signal
+ *      state (no good simulated-player equivalent for "stand on a
+ *      plate momentarily").
  */
 import { type Dimension, type Vector3 } from "@minecraft/server";
 import type { InputKind } from "../spec/schema.js";
+import { simInteractWithBlock } from "./sim-player.js";
 
-export function driveInput(
+export async function driveInput(
   dim: Dimension,
   pos: Vector3,
   kind: InputKind,
   value: "on" | "off",
-): void {
+): Promise<void> {
   switch (kind) {
     case "lever":           return driveLever(dim, pos, value === "on");
     case "redstone_block":  return driveRedstoneBlock(dim, pos, value === "on");
@@ -30,7 +39,7 @@ export function driveInput(
   }
 }
 
-function driveLever(dim: Dimension, pos: Vector3, on: boolean): void {
+async function driveLever(dim: Dimension, pos: Vector3, on: boolean): Promise<void> {
   const block = dim.getBlock(pos);
   if (!block) {
     throw new Error(`driveLever: block at ${pos.x},${pos.y},${pos.z} is null (chunk unloaded?)`);
@@ -40,9 +49,10 @@ function driveLever(dim: Dimension, pos: Vector3, on: boolean): void {
       `driveLever: expected minecraft:lever at ${pos.x},${pos.y},${pos.z}, found ${block.typeId}`,
     );
   }
-  const dir = String(block.permutation.getState("lever_direction") ?? "up_east_west");
-  const cmd = `setblock ${pos.x} ${pos.y} ${pos.z} minecraft:lever ["lever_direction"="${dir}","open_bit"=${on ? "true" : "false"}]`;
-  dim.runCommand(cmd);
+  // Interact toggles. Only click if current != desired.
+  const currentlyOn = block.permutation.getState("open_bit") === true;
+  if (currentlyOn === on) return;
+  await simInteractWithBlock(dim, pos);
 }
 
 function driveRedstoneBlock(dim: Dimension, pos: Vector3, on: boolean): void {
@@ -50,7 +60,7 @@ function driveRedstoneBlock(dim: Dimension, pos: Vector3, on: boolean): void {
   dim.runCommand(`setblock ${pos.x} ${pos.y} ${pos.z} ${target}`);
 }
 
-function driveButton(dim: Dimension, pos: Vector3, on: boolean): void {
+async function driveButton(dim: Dimension, pos: Vector3, on: boolean): Promise<void> {
   const block = dim.getBlock(pos);
   if (!block) {
     throw new Error(`driveButton: block at ${pos.x},${pos.y},${pos.z} is null (chunk unloaded?)`);
@@ -60,10 +70,10 @@ function driveButton(dim: Dimension, pos: Vector3, on: boolean): void {
       `driveButton: expected a button at ${pos.x},${pos.y},${pos.z}, found ${block.typeId}`,
     );
   }
-  // Preserve facing_direction so the button stays on the same wall.
-  const facing = block.permutation.getState("facing_direction") ?? 0;
-  const cmd = `setblock ${pos.x} ${pos.y} ${pos.z} ${block.typeId} ["facing_direction"=${facing},"button_pressed_bit"=${on ? "true" : "false"}]`;
-  dim.runCommand(cmd);
+  // Buttons are momentary: a single right-click presses + auto-releases.
+  // "on" -> click it; "off" -> no-op (button will already be releasing).
+  if (!on) return;
+  await simInteractWithBlock(dim, pos);
 }
 
 function drivePressurePlate(dim: Dimension, pos: Vector3, on: boolean): void {

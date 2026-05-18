@@ -15,6 +15,7 @@
   "devDependencies": {
     "@minecraft/server": "2.8.0-beta.1.26.21-stable",
     "@minecraft/server-admin": "1.0.0-beta.1.26.21-stable",
+    "@minecraft/server-gametest": "^1.0.0-beta.1.26.21-stable",
     "@minecraft/server-net": "1.0.0-beta.1.26.21-stable",
     "esbuild": "^0.23.0",
     "prismarine-nbt": "^2.5.0",
