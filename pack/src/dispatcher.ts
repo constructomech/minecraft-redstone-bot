@@ -20,7 +20,8 @@ export type Command =
   | { jobId: string; type: "redo";  payload: { jobId?: string } }
   | { jobId: string; type: "test";  payload: { jobId?: string; testName?: string } }
   | { jobId: string; type: "world"; payload: { bounds: [number, number, number, number, number, number]; dimension?: string } }
-  | { jobId: string; type: "setanchor"; payload: { x: number; y: number; z: number; facing: string; dimension?: string } };
+  | { jobId: string; type: "setanchor"; payload: { x: number; y: number; z: number; facing: string; dimension?: string } }
+  | { jobId: string; type: "runCommand"; payload: { command: string; dimension?: string } };
 
 export type CommandResult =
   | { ok: true; data: unknown }
@@ -35,6 +36,7 @@ export async function dispatch(cmd: Command): Promise<CommandResult> {
       case "test":  return await handleTest(cmd.payload);
       case "world": return handleWorld(cmd.payload);
       case "setanchor": return handleSetAnchor(cmd.payload);
+      case "runCommand": return handleRunCommand(cmd.payload);
       default: {
         const t = (cmd as { type?: unknown }).type;
         return { ok: false, error: `unknown command type: ${String(t)}` };
@@ -261,6 +263,32 @@ function handleSetAnchor(payload: { x: number; y: number; z: number; facing: str
   });
   console.log(`[rsforge] setanchor (agent): ${dimension} ${x} ${y} ${z} ${facing}`);
   return { ok: true, data: { dimension, pos: { x, y, z }, facing } };
+}
+
+// ---------- runCommand ----------
+
+/**
+ * Run an arbitrary slash-command in a dimension. Powerful — used for
+ * `tickingarea add`, ad-hoc /setblock cleanup, and other admin tasks
+ * the typed dispatch APIs don't cover.
+ */
+function handleRunCommand(payload: { command: string; dimension?: string }): CommandResult {
+  if (typeof payload.command !== "string" || payload.command.length === 0) {
+    return { ok: false, error: "runCommand: payload.command must be a non-empty string" };
+  }
+  // Strip a leading slash if present — runCommand wants the verb without one.
+  const cmd = payload.command.replace(/^\//, "");
+  const dimId = payload.dimension ?? "minecraft:overworld";
+  let dim;
+  try { dim = world.getDimension(dimId); }
+  catch { return { ok: false, error: `runCommand: unknown dimension '${dimId}'` }; }
+  try {
+    const result = dim.runCommand(cmd);
+    console.log(`[rsforge] runCommand (agent): '${cmd}' -> successCount=${result.successCount}`);
+    return { ok: true, data: { command: cmd, dimension: dimId, successCount: result.successCount } };
+  } catch (err) {
+    return { ok: false, error: `runCommand failed: ${String(err)}` };
+  }
 }
 
 // ---------- test ----------

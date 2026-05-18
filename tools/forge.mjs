@@ -71,6 +71,7 @@ switch (cmd) {
   case "redo":    await cliCall("POST", "/redo", JSON.stringify(process.argv[3] ? { jobId: process.argv[3] } : {}), "application/json"); break;
   case "test":    await cliTest(process.argv[3], process.argv[4]); break;
   case "world":   await cliWorld(process.argv.slice(3)); break;
+  case "cmd":     await cliRunCommand(process.argv.slice(3)); break;
   case "help":
   default:        printHelp(); process.exit(cmd === "help" ? 0 : 2);
 }
@@ -87,6 +88,7 @@ function printHelp() {
   node tools/forge.mjs redo [jobId]                POST /redo
   node tools/forge.mjs test [jobId] [test]         POST /test
   node tools/forge.mjs world <x1> <y1> <z1> <x2> <y2> <z2>   GET /world?bounds=...
+  node tools/forge.mjs cmd "<slash command>"        POST /command (runCommand in overworld)
 
 facing must be one of: north, south, east, west
 
@@ -306,6 +308,25 @@ function runDaemon() {
         }
       }
 
+      if (req.method === "POST" && url.pathname === "/command") {
+        let payload;
+        try { payload = JSON.parse(body || "{}"); }
+        catch { return send(400, { error: "invalid json" }); }
+        if (typeof payload.command !== "string" || payload.command.length === 0) {
+          return send(400, { error: "body must be { command: string, dimension?: string }" });
+        }
+        try {
+          const result = await enqueueCommand("runCommand", {
+            command: payload.command,
+            dimension: payload.dimension,
+          });
+          const status = result?.ok === false ? 422 : 200;
+          return send(status, result);
+        } catch (err) {
+          return send(504, { ok: false, error: String(err.message ?? err) });
+        }
+      }
+
       if (req.method === "GET" && url.pathname === "/world") {
         const boundsStr = url.searchParams.get("bounds");
         const dimension = url.searchParams.get("dimension") ?? "minecraft:overworld";
@@ -368,6 +389,15 @@ function runDaemon() {
 // ──────────────────────────────────────────────────────────────
 // CLI
 // ──────────────────────────────────────────────────────────────
+
+async function cliRunCommand(args) {
+  if (args.length === 0) {
+    console.error("forge cmd: need a command string");
+    process.exit(2);
+  }
+  const command = args.join(" ");
+  await cliCall("POST", "/command", JSON.stringify({ command }), "application/json");
+}
 
 async function cliSetAnchor(args) {
   if (args.length < 4) {
