@@ -126,3 +126,23 @@ These three may all share a root cause: the Script API's
 `setBlockPermutation` / `setBlockType` paths take a different code path
 than vanilla world editing, and that path skips some of the bookkeeping
 (neighbor updates, attached-block pointers) that other systems rely on.
+
+## Update 2026-05-18: this bug NO LONGER REPRODUCES
+
+Re-tested on BDS 1.26.21.1 (same version as the original report) with
+the same setup — solid stone support, `up_east_west` floor-mount lever
+placed via `setBlockPermutation`, no player anywhere in the world. The
+lever survives indefinitely (verified at 5 ticks, 60+ ticks, and 100+
+ticks). Re-tested in a fresh chunk (anchor at (50, 80, 50) with a
+freshly-added `tickingarea`) — same result, lever does not drop.
+
+Either Mojang fixed the underlying scheduled-physics-validity path
+between the original filing and now, or our pipeline changes (use of
+`runCommand` for adjacent components, sim-player click-driven inputs)
+indirectly avoid whatever condition triggers the drop. Workaround in
+the pack (use `setBlockPermutation` and don't worry about it) is now
+correct without further intervention.
+
+The selftest harness comment about "levers in mid-air get physics-
+dropped" is now stale — re-enable the lever-driven test path in
+selftest at the next opportunity.

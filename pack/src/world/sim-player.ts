@@ -181,6 +181,32 @@ function faceOffset(face: Direction): Vector3 {
   }
 }
 
+export { faceOffset };
+
+/**
+ * Map a piston's `facing_direction` state value (as written in a spec
+ * and read back from a placed piston block) to the @minecraft/server
+ * Direction enum representing where the piston's HEAD will extend.
+ *
+ * NOTE: this uses the *empirical* convention observed in BDS 1.26.21.1,
+ * which is the OPPOSITE of the Minecraft wiki's documented mapping for
+ * east/west. fd=4 here means head extends east; fd=5 means head west.
+ * The values for up/down/north/south match the wiki. See
+ * bugs/script-api-piston-no-power-response.md (Update 2026-05-18,
+ * "Finding 2") for the full discussion.
+ */
+export function pistonFacingDirectionToHeadDirection(fd: number): Direction | null {
+  switch (fd) {
+    case 0: return Direction.Down;
+    case 1: return Direction.Up;
+    case 2: return Direction.South;
+    case 3: return Direction.North;
+    case 4: return Direction.East;
+    case 5: return Direction.West;
+    default: return null;
+  }
+}
+
 function waitTicks(n: number): Promise<void> {
   return new Promise((resolve) => system.runTimeout(() => resolve(), n));
 }

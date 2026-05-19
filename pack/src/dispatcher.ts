@@ -33,9 +33,9 @@ export type CommandResult =
 export async function dispatch(cmd: Command): Promise<CommandResult> {
   try {
     switch (cmd.type) {
-      case "build": return handleBuild(cmd.payload, cmd.jobId);
+      case "build": return await handleBuild(cmd.payload, cmd.jobId);
       case "undo":  return handleUndo(cmd.payload);
-      case "redo":  return handleRedo(cmd.payload, cmd.jobId);
+      case "redo":  return await handleRedo(cmd.payload, cmd.jobId);
       case "test":  return await handleTest(cmd.payload);
       case "world": return handleWorld(cmd.payload);
       case "setanchor": return handleSetAnchor(cmd.payload);
@@ -53,7 +53,11 @@ export async function dispatch(cmd: Command): Promise<CommandResult> {
 
 // ---------- build ----------
 
-function handleBuild(payload: { spec: unknown }, jobId: string): CommandResult {
+function handleBuild(payload: { spec: unknown }, jobId: string): Promise<CommandResult> {
+  return handleBuildAsync(payload, jobId);
+}
+
+async function handleBuildAsync(payload: { spec: unknown }, jobId: string): Promise<CommandResult> {
   const v = validateSpec(payload.spec);
   if (!v.ok) {
     return { ok: false, error: "spec validation failed", errors: v.errors };
@@ -70,7 +74,7 @@ function handleBuild(payload: { spec: unknown }, jobId: string): CommandResult {
 
   let result;
   try {
-    result = executeBuild(spec, anchor);
+    result = await executeBuild(spec, anchor);
   } catch (err) {
     return { ok: false, error: `build failed: ${String(err)}` };
   }
@@ -134,7 +138,11 @@ function handleUndo(payload: { jobId?: string }): CommandResult {
 
 // ---------- redo ----------
 
-function handleRedo(payload: { jobId?: string }, newJobId: string): CommandResult {
+function handleRedo(payload: { jobId?: string }, newJobId: string): Promise<CommandResult> {
+  return handleRedoAsync(payload, newJobId);
+}
+
+async function handleRedoAsync(payload: { jobId?: string }, newJobId: string): Promise<CommandResult> {
   const job = payload.jobId ? getJob(payload.jobId) : latestUndone();
   if (!job) {
     return {
@@ -151,7 +159,7 @@ function handleRedo(payload: { jobId?: string }, newJobId: string): CommandResul
   // Re-execute the same build (same spec + same anchor + same rotation).
   let result;
   try {
-    result = executeBuild(job.spec, job.anchor);
+    result = await executeBuild(job.spec, job.anchor);
   } catch (err) {
     return { ok: false, error: `redo failed: ${String(err)}` };
   }
@@ -341,7 +349,10 @@ async function handleSimReplace(payload: {
       dir,
       itemId,
     );
-    return { ok: result.placed, data: { target, support, face: faceKey, itemId, ...result } };
+    if (result.placed) {
+      return { ok: true, data: { target, support, face: faceKey, itemId, ...result } };
+    }
+    return { ok: false, error: `simReplace did not place block: ${result.details}` };
   } catch (err) {
     return { ok: false, error: `simReplace failed: ${String(err)}` };
   }

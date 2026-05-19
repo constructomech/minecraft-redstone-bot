@@ -91,3 +91,76 @@ Script API placement bugs (see `README.md`). The common theme is
 that programmatic placement establishes a block in the world's
 storage but doesn't fully integrate it with the engine's redstone
 / physics / update graphs.
+
+## Update 2026-05-18: deeper findings via SimulatedPlayer
+
+Re-tested with `@minecraft/server-gametest`'s `spawnSimulatedPlayer`
+API + `SimulatedPlayer.useItemOnBlock`. Several of the original
+report's claims need updating.
+
+### Finding 1: bug-doc workaround was wrong
+
+The original report said "a player placing the redstone_block by
+hand triggers extension". We verified the inverse: when the piston
+is `runCommand`-placed and a SimulatedPlayer then `useItemOnBlock`s
+a `redstone_block` adjacent to it, the piston still does not extend.
+
+It's the *piston itself*, not the source, that has to come from a
+player-equivalent placement. A SimulatedPlayer that breaks the
+runCommand-placed piston and places a fresh `sticky_piston` from
+its inventory via `useItemOnBlock` produces a piston that responds
+to power changes correctly — including subsequent placement and
+removal of an adjacent `redstone_block` via `runCommand setblock`.
+
+### Finding 2: `facing_direction` reporting is inconsistent
+
+Setting `facing_direction: 5` via `runCommand setblock` produces a
+piston whose state reads `facing_direction: 5`, which the Minecraft
+wiki documents as "head extends east". This piston is unresponsive,
+so we can't directly observe where its head would go.
+
+A SimulatedPlayer placing a piston via `useItemOnBlock` with
+`Direction.East` (intent: head should extend east) produces a piston
+that DOES extend, with `sticky_piston_arm_collision` at +x (east of
+the piston body), but the piston body's `facing_direction` reads as
+**4** — which the wiki says is "head west". The arm collision block
+has the same `facing_direction: 4`.
+
+We can't reconcile the wiki convention with this observation. The
+practical fix in our pack is `world/probes.ts`, which now scans all
+six neighbours of a piston for either `piston_arm_collision` or
+`sticky_piston_arm_collision` instead of trusting the
+`facing_direction` state.
+
+### Finding 3: `runCommand`-placed pistons are fragile
+
+A piston placed via `runCommand setblock` with `facing_direction: 5`
+(wiki's "east", engine's interpretation unclear) is *destroyed* when
+the adjacent block at +x is changed via `setblock`. The destruction
+fires even when no power is involved — e.g., swapping a wire to
+stone at the piston's +x neighbour deletes the piston, replacing it
+with air. The same swap on a piston with `facing_direction: 4`
+leaves the piston intact.
+
+This blocks the obvious "build → temporarily swap wire for stone to
+have a sim-replace support → restore wire" recipe for circuits that
+need wire directly adjacent to the piston: the swap kills the
+piston before sim-replace can run.
+
+### Workaround that works as of this filing
+
+For any piston in a contraption:
+
+1. Place via `runCommand setblock` with `facing_direction` matching
+   the desired empirical extension direction (use **4** to make
+   the head extend east, **5** for west — opposite of wiki) so the
+   piston survives subsequent neighbour changes.
+2. Have a SimulatedPlayer break the piston and re-place it via
+   `useItemOnBlock` on an adjacent solid block. The face direction
+   passed to `useItemOnBlock` becomes the extension direction.
+3. Power source can be `runCommand`-placed; sim-placed pistons
+   respond to subsequent power changes normally.
+
+This is still not the right code path — Mojang's redstone graph
+should accept programmatic placements correctly — but it's enough
+to drive automated piston-based contraption tests today.

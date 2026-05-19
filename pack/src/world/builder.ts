@@ -25,6 +25,7 @@
  */
 import {
   BlockPermutation,
+  Direction,
   world,
   type Dimension,
   type Vector3,
@@ -34,6 +35,12 @@ import { findComponent } from "../spec/components.js";
 import type { ContraptionSpec, SpecBlock } from "../spec/schema.js";
 import { captureSnapshot, type Snapshot } from "./snapshot.js";
 import {
+  faceOffset,
+  pistonFacingDirectionToHeadDirection,
+  simReplaceBlock,
+} from "./sim-player.js";
+import {
+  rotateFacingInt,
   rotatePosition,
   rotationForFacing,
   rotateStates,
@@ -140,7 +147,7 @@ function placeOne(
  * placements. Returns the snapshot for the caller to associate with a
  * job for later /undo.
  */
-export function executeBuild(spec: ContraptionSpec, anchor: Anchor): BuildResult {
+export async function executeBuild(spec: ContraptionSpec, anchor: Anchor): Promise<BuildResult> {
   const dim = world.getDimension(anchor.dimension);
 
   const { placements, rotationSteps } = planPlacements(spec, anchor);
@@ -181,8 +188,71 @@ export function executeBuild(spec: ContraptionSpec, anchor: Anchor): BuildResult
     dim.setBlockPermutation(p.abs, p.permutation);
   }
 
+  // Pistons placed via runCommand setblock land correctly but never
+  // respond to redstone power. Workaround: have a SimulatedPlayer
+  // break-and-re-place each one via useItemOnBlock, which goes through
+  // the engine's real placement path and registers the piston in the
+  // redstone update graph. See bugs/script-api-piston-no-power-response.md
+  // (Update 2026-05-18). Cost: ~10 ticks per piston (synchronous on
+  // the dispatcher's async path, so the agent's POST /build waits).
+  await kickPistons(dim, placements);
+
   const bounds = computeBounds(positions);
   return { placed: placements.length, snapshot, bounds, rotationSteps };
+}
+
+const PISTON_IDS = new Set(["minecraft:piston", "minecraft:sticky_piston"]);
+
+async function kickPistons(dim: Dimension, placements: readonly Placement[]): Promise<void> {
+  for (const p of placements) {
+    if (!PISTON_IDS.has(p.id)) continue;
+
+    // Resolve the head-extension direction from the piston's already-rotated
+    // facing_direction state (the placements went through planPlacements,
+    // which applied the rotation).
+    const fd = p.permutation.getState("facing_direction");
+    if (typeof fd !== "number") {
+      console.warn(`[rsforge] kickPistons: piston at ${fmt(p.abs)} has no numeric facing_direction; skipping kick`);
+      continue;
+    }
+    const headDir = pistonFacingDirectionToHeadDirection(fd);
+    if (headDir === null) {
+      console.warn(`[rsforge] kickPistons: piston at ${fmt(p.abs)} has unknown facing_direction=${fd}; skipping kick`);
+      continue;
+    }
+    const offset = faceOffset(headDir);
+    const supportPos: Vector3 = {
+      x: p.abs.x - offset.x,
+      y: p.abs.y - offset.y,
+      z: p.abs.z - offset.z,
+    };
+
+    // Sim-replace requires a solid block to click. If the back of the
+    // piston isn't solid (or doesn't exist), skip the kick — the piston
+    // will land via runCommand but won't respond to redstone power.
+    // This is preferable to breaking the piston and being unable to
+    // replace it, which would leave a hole in the contraption.
+    const supportBlock = dim.getBlock(supportPos);
+    if (!supportBlock || supportBlock.typeId === "minecraft:air") {
+      console.warn(
+        `[rsforge] kickPistons: piston at ${fmt(p.abs)} (fd=${fd}) has no solid block at ${fmt(supportPos)} for sim-replace; skipping kick (piston will be inert)`,
+      );
+      continue;
+    }
+
+    try {
+      const result = await simReplaceBlock(dim, p.abs, supportPos, headDir, p.id);
+      if (!result.placed) {
+        console.warn(`[rsforge] kickPistons: sim-replace at ${fmt(p.abs)} did not place — ${result.details}`);
+      }
+    } catch (err) {
+      console.warn(`[rsforge] kickPistons: sim-replace at ${fmt(p.abs)} threw: ${String(err)}`);
+    }
+  }
+}
+
+function fmt(v: Vector3): string {
+  return `${v.x},${v.y},${v.z}`;
 }
 
 /**

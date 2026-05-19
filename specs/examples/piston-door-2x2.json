@@ -1,0 +1,54 @@
+{
+  "name": "piston-door-2x2",
+  "version": 2,
+  "footprint": { "size": [3, 3, 2] },
+  "anchor": "player-facing",
+  "blocks": [
+    { "at": [0, 0, 0], "id": "minecraft:stone" },
+    { "at": [1, 0, 0], "id": "minecraft:stone" },
+    { "at": [2, 0, 0], "id": "minecraft:stone" },
+    { "at": [0, 0, 1], "id": "minecraft:stone" },
+    { "at": [1, 0, 1], "id": "minecraft:stone" },
+    { "at": [2, 0, 1], "id": "minecraft:stone" },
+
+    { "at": [0, 1, 0], "id": "minecraft:redstone_block" },
+    { "at": [0, 1, 1], "id": "minecraft:redstone_block" },
+    { "at": [0, 2, 0], "id": "minecraft:redstone_block" },
+    { "at": [0, 2, 1], "id": "minecraft:redstone_block" },
+
+    { "at": [1, 1, 0], "id": "minecraft:sticky_piston", "states": { "facing_direction": 4 } },
+    { "at": [1, 1, 1], "id": "minecraft:sticky_piston", "states": { "facing_direction": 4 } },
+    { "at": [1, 2, 0], "id": "minecraft:sticky_piston", "states": { "facing_direction": 4 } },
+    { "at": [1, 2, 1], "id": "minecraft:sticky_piston", "states": { "facing_direction": 4 } }
+  ],
+  "ports": {
+    "inputs": {
+      "bl": { "at": [0, 1, 0], "kind": "redstone_block" },
+      "br": { "at": [0, 1, 1], "kind": "redstone_block" },
+      "tl": { "at": [0, 2, 0], "kind": "redstone_block" },
+      "tr": { "at": [0, 2, 1], "kind": "redstone_block" }
+    },
+    "outputs": {
+      "p_bl": { "at": [1, 1, 0], "kind": "piston" },
+      "p_br": { "at": [1, 1, 1], "kind": "piston" },
+      "p_tl": { "at": [1, 2, 0], "kind": "piston" },
+      "p_tr": { "at": [1, 2, 1], "kind": "piston" }
+    }
+  },
+  "tests": [
+    {
+      "name": "all four pistons follow their redstone_block inputs",
+      "steps": [
+        { "set": { "bl": "on", "br": "on", "tl": "on", "tr": "on" } },
+        { "wait_ticks": 6 },
+        { "expect": { "p_bl": "on", "p_br": "on", "p_tl": "on", "p_tr": "on" } },
+        { "set": { "bl": "off", "br": "off", "tl": "off", "tr": "off" } },
+        { "wait_ticks": 6 },
+        { "expect": { "p_bl": "off", "p_br": "off", "p_tl": "off", "p_tr": "off" } },
+        { "set": { "bl": "on", "br": "on", "tl": "on", "tr": "on" } },
+        { "wait_ticks": 6 },
+        { "expect": { "p_bl": "on", "p_br": "on", "p_tl": "on", "p_tr": "on" } }
+      ]
+    }
+  ]
+}
