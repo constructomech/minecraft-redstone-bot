@@ -122,22 +122,25 @@ export async function simReplaceBlock(
   try {
     player.fly();
 
-    // Work position: on the opposite side of supportPos from targetPos.
+    // Work position: one cell PAST the target in the face direction.
+    // (If we put the player in the target cell itself the engine refuses
+    // placement to avoid overlapping the player's hitbox.) From here the
+    // player looks back at the support through the now-empty target.
     const delta = faceOffset(face);
     const workPos: Vector3 = {
-      x: supportPos.x - delta.x + 0.5,
-      y: supportPos.y,
-      z: supportPos.z - delta.z + 0.5,
+      x: supportPos.x + delta.x * 2 + 0.5,
+      y: supportPos.y + delta.y * 2,
+      z: supportPos.z + delta.z * 2 + 0.5,
     };
-    const targetCenter: Vector3 = {
-      x: targetPos.x + 0.5, y: targetPos.y + 0.5, z: targetPos.z + 0.5,
+    const supportCenter: Vector3 = {
+      x: supportPos.x + 0.5, y: supportPos.y + 0.5, z: supportPos.z + 0.5,
     };
     player.teleport(workPos, {
       dimension: dim,
-      facingLocation: targetCenter,
+      facingLocation: supportCenter,
     });
     await waitTicks(4); // generous settle time
-    log.push(`tp to ${workPos.x},${workPos.y},${workPos.z} facing ${targetCenter.x},${targetCenter.y},${targetCenter.z}`);
+    log.push(`tp to ${workPos.x},${workPos.y},${workPos.z} facing ${supportCenter.x},${supportCenter.y},${supportCenter.z}`);
 
     // Break the existing block (if any) at targetPos.
     const beforeBreak = dim.getBlock(targetPos)?.typeId ?? "<null>";

@@ -51,35 +51,38 @@ function readWire(dim: Dimension, pos: Vector3): Binary {
 
 /**
  * Read a piston's extension state. "on" when the piston has its head
- * extended (i.e. there's a piston_arm_collision block at the facing
- * offset), "off" otherwise.
+ * extended (i.e. there's an arm_collision block adjacent to the piston
+ * body), "off" otherwise.
  *
- * facing_direction conventions (Bedrock):
- *   0 = down  (head at pos.y-1)
- *   1 = up    (head at pos.y+1)
- *   2 = north (head at pos.z-1)
- *   3 = south (head at pos.z+1)
- *   4 = west  (head at pos.x-1)
- *   5 = east  (head at pos.x+1)
+ * Implementation note: we used to interpret the piston's
+ * `facing_direction` state to know which neighbour to look at, but
+ * empirically the value Bedrock reports doesn't match its docs (and
+ * differs depending on whether the piston was placed via setblock vs.
+ * a real/simulated player). Robust path: check ALL 6 neighbours for
+ * either piston_arm_collision (regular) or sticky_piston_arm_collision
+ * (sticky). The head only ever appears in exactly one cell when
+ * extended.
  */
 function readPiston(dim: Dimension, pos: Vector3): Binary {
   const block = dim.getBlock(pos);
   if (!block) return "off";
   const isPiston = block.typeId === "minecraft:piston" || block.typeId === "minecraft:sticky_piston";
   if (!isPiston) return "off";
-  const facing = block.permutation.getState("facing_direction");
-  if (typeof facing !== "number") return "off";
-  const headPos: Vector3 = { ...pos };
-  switch (facing) {
-    case 0: headPos.y -= 1; break;
-    case 1: headPos.y += 1; break;
-    case 2: headPos.z -= 1; break;
-    case 3: headPos.z += 1; break;
-    case 4: headPos.x -= 1; break;
-    case 5: headPos.x += 1; break;
-    default: return "off";
+  const neighbours: Vector3[] = [
+    { x: pos.x + 1, y: pos.y,     z: pos.z     },
+    { x: pos.x - 1, y: pos.y,     z: pos.z     },
+    { x: pos.x,     y: pos.y + 1, z: pos.z     },
+    { x: pos.x,     y: pos.y - 1, z: pos.z     },
+    { x: pos.x,     y: pos.y,     z: pos.z + 1 },
+    { x: pos.x,     y: pos.y,     z: pos.z - 1 },
+  ];
+  for (const np of neighbours) {
+    const nb = dim.getBlock(np);
+    if (!nb) continue;
+    if (nb.typeId === "minecraft:piston_arm_collision" ||
+        nb.typeId === "minecraft:sticky_piston_arm_collision") {
+      return "on";
+    }
   }
-  const head = dim.getBlock(headPos);
-  if (!head) return "off";
-  return head.typeId === "minecraft:piston_arm_collision" ? "on" : "off";
+  return "off";
 }
