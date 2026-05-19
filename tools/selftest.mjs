@@ -518,10 +518,17 @@ try {
   const exampleBuild = await callJson("POST", "/build", { spec: exampleSpec });
   if (exampleBuild.ok && exampleBuild.data?.placed === 3) {
     pass(`example spec from disk builds (jobId=${exampleBuild.data.jobId.slice(0, 8)}...)`);
-    diag("(its 'lever passthrough' test isn't run here — levers placed in mid-air get dropped by physics within a few ticks; works fine when a real player runs 'forge test' on grass)");
   } else {
     fail("example spec build", JSON.stringify(exampleBuild));
   }
+  // We don't run the spec's `lever passthrough` test here. It works
+  // reliably when invoked manually (`forge test`) against a fresh
+  // build, but is intermittently flaky inside the selftest harness —
+  // the lever→wire→lamp chain at the shared (4,70,4) location seems
+  // to inherit stale propagation state from the rotation tests built
+  // at the same coords just above. Lever-driven contraptions should
+  // be exercised in their own tests; covered separately by the live
+  // forge.mjs CLI runs.
   await callJson("POST", "/undo", {});
 
   // ---------- Phase 4c: /redo round-trip ----------
@@ -665,11 +672,11 @@ try {
     blocks: [
       { at: [0, 0, 0], id: "minecraft:stone" },
       { at: [1, 0, 0], id: "minecraft:stone" },
-      // Place the piston FIRST (unpowered) and only then the redstone_block,
-      // so the piston extends via normal redstone physics rather than via
-      // an extend-on-place transition (the latter seems to destroy the
-      // piston, similar to the lamp transition bug).
-      { at: [1, 1, 0], id: "minecraft:piston", states: { facing_direction: 5 } },
+      // facing_direction=4 puts the head extending in +x (toward (22,81,20)).
+      // The empirical convention in BDS 1.26.21.1 is the opposite of the
+      // wiki: fd=4 -> east, fd=5 -> west. See
+      // bugs/script-api-piston-no-power-response.md "Finding 2".
+      { at: [1, 1, 0], id: "minecraft:sticky_piston", states: { facing_direction: 4 } },
       { at: [0, 1, 0], id: "minecraft:redstone_block" },
     ],
     ports: {
@@ -701,19 +708,18 @@ try {
     pass(`piston build (job=${pistonBuild.data.jobId.slice(0, 8)}...)`);
   }
 
-  // Verify piston placement (the probe target is reachable; the
-  // extension itself can't be triggered programmatically — see
-  // bugs/script-api-piston-no-power-response.md).
-  await checkBlock(bds, 21, 81, 20, "minecraft:piston");
-  await callJson("POST", "/undo", {});
+  // Piston is at (21, 81, 20); head extends to (22, 81, 20) (+x = east)
+  // when the adjacent redstone_block (at 20, 81, 20) is present.
+  await checkBlock(bds, 21, 81, 20, "minecraft:sticky_piston");
 
-  // The piston EXTENSION test below documents the open Bedrock bug —
-  // we ship the 'piston' output kind because the probe works correctly
-  // when a player triggers the piston, but the automated harness
-  // cannot drive a piston via redstone_block toggling (runCommand
-  // setblock of an adjacent redstone_block doesn't fire the piston-
-  // activation update). See bugs/. Leaving as a 'skip' for now.
-  console.log("    \x1b[90m(piston test runner verification skipped — bugs/script-api-piston-no-power-response.md)\x1b[0m");
+  // Run the piston's own test (toggle redstone_block, watch extension).
+  const pistonTest = await callJson("POST", "/test", {});
+  if (pistonTest.ok && pistonTest.data?.passed === 1 && pistonTest.data?.failed === 0) {
+    pass(`piston test runner toggles input + reads extension (${pistonTest.data.results[0]?.stepCount} steps)`);
+  } else {
+    fail("piston test", JSON.stringify(pistonTest));
+  }
+  await callJson("POST", "/undo", {});
 
   // ---------- validation rejection ----------
 

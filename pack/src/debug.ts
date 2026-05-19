@@ -170,24 +170,46 @@ function debugSetState(message: string): void {
  * empirically compare against `runCommand setblock` placement in the
  * same scenario.
  *
- * Payload: "<x> <y> <z> <blockId>"
+ * Payload: "<x> <y> <z> <blockId> [key=value ...]"
  *   e.g. "8 81 8 minecraft:redstone_block"
+ *   e.g. "9 80 8 minecraft:sticky_piston facing_direction=4"
+ *
+ * State value parsing: "true"/"false" -> boolean, integer string -> number,
+ * otherwise string.
  */
 function debugSetPermutation(message: string): void {
   const parts = message.trim().split(/\s+/);
   if (parts.length < 4) {
-    console.error(`[rsforge] debug_setperm: expected "<x> <y> <z> <id>"`);
+    console.error(`[rsforge] debug_setperm: expected "<x> <y> <z> <id> [key=value ...]"`);
     return;
   }
-  const [xs, ys, zs, blockId] = parts as [string, string, string, string];
+  const [xs, ys, zs, blockId, ...stateAssignments] = parts as [string, string, string, string, ...string[]];
   const x = Number.parseInt(xs, 10);
   const y = Number.parseInt(ys, 10);
   const z = Number.parseInt(zs, 10);
+  const states: Record<string, string | number | boolean> = {};
+  for (const assign of stateAssignments) {
+    const eq = assign.indexOf("=");
+    if (eq < 0) {
+      console.error(`[rsforge] debug_setperm: bad state assignment '${assign}' (expected key=value)`);
+      return;
+    }
+    const k = assign.slice(0, eq);
+    const v = assign.slice(eq + 1);
+    if (v === "true") states[k] = true;
+    else if (v === "false") states[k] = false;
+    else if (/^-?\d+$/.test(v)) states[k] = Number.parseInt(v, 10);
+    else states[k] = v;
+  }
   const dim = world.getDimension("minecraft:overworld");
   try {
-    const perm = BlockPermutation.resolve(blockId);
+    const perm = Object.keys(states).length > 0
+      ? BlockPermutation.resolve(blockId, states)
+      : BlockPermutation.resolve(blockId);
     dim.setBlockPermutation({ x, y, z }, perm);
-    console.log(`[rsforge] debug_setperm: ${blockId} at ${x},${y},${z} (via setBlockPermutation)`);
+    console.log(
+      `[rsforge] debug_setperm: ${blockId} at ${x},${y},${z} states=${JSON.stringify(states)} (via setBlockPermutation)`,
+    );
   } catch (err) {
     console.error(`[rsforge] debug_setperm failed: ${String(err)}`);
   }

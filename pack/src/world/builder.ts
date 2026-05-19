@@ -8,24 +8,22 @@
  *                       the player", and directional block states
  *                       rotate to match. See pack/src/world/transform.ts.
  *
- * IMPORTANT: blocks whose behaviour depends on neighbour power state
- * (redstone wire, lamp, repeater, comparator, observer) need to go
- * through Bedrock's vanilla /setblock path to be correctly registered
- * in the redstone update graph. setBlockPermutation alone places the
- * block but doesn't fire the neighbor-update notifications, so e.g.
- * lamps placed by setBlockPermutation are destroyed (set to air)
- * instead of transitioning to lit_redstone_lamp when adjacent wire
- * powers up. See bugs/script-api-lamp-destroyed-on-transition.md
- * (and the three sibling bug reports — they share a root cause).
+ * Placement is via `dim.runCommand("setblock x y z <id> [..states..]")`
+ * for almost everything. Empirically, batched `setBlockPermutation`
+ * calls on a fresh BDS occasionally drop placements outright — the
+ * selftest reproduces this for stone (foundation block) AND for lever
+ * (placed lever vanishes a few ticks later, the old bug 3 symptom).
+ * The vanilla `/setblock` command goes through Bedrock's normal place
+ * path which establishes neighbor-update queues and attached-block
+ * pointers correctly.
  *
- * Workaround used here: after the natural setBlockPermutation call,
- * follow up with `dim.runCommand("setblock x y z <id>")` for the
- * affected block types. The block ends up placed twice but only the
- * second placement registers properly in the update graph.
+ * The exception is pistons: `runCommand setblock` triggers bug 5 (piston
+ * placed but never responds to power), while `setBlockPermutation`
+ * places them correctly registered in the redstone graph. We carve
+ * them out into the Script API path on purpose.
  */
 import {
   BlockPermutation,
-  Direction,
   world,
   type Dimension,
   type Vector3,
@@ -35,12 +33,6 @@ import { findComponent } from "../spec/components.js";
 import type { ContraptionSpec, SpecBlock } from "../spec/schema.js";
 import { captureSnapshot, type Snapshot } from "./snapshot.js";
 import {
-  faceOffset,
-  pistonFacingDirectionToHeadDirection,
-  simReplaceBlock,
-} from "./sim-player.js";
-import {
-  rotateFacingInt,
   rotatePosition,
   rotationForFacing,
   rotateStates,
@@ -48,34 +40,11 @@ import {
 } from "./transform.js";
 
 /**
- * Block IDs that need to skip setBlockPermutation entirely and go
- * straight through runCommand("setblock ...") for placement.
- *
- * These split into two flavours:
- *   STATELESS: bare /setblock command (no state values). Wire and lamp
- *              have engine-computed states (redstone_signal, lit) that
- *              should be left as defaults so propagation can override
- *              them.
- *   STATEFUL:  /setblock with state preservation. Pistons, repeaters,
- *              comparators, observers carry user-meaningful directional
- *              state that must travel through to the runCommand path.
- *
- * In both cases, setBlockPermutation is SKIPPED — empirically, calling
- * it before runCommand still poisons the block's update-graph
- * registration. See bugs/script-api-lamp-destroyed-on-transition.md.
+ * Blocks placed via `setBlockPermutation`. These are blocks whose
+ * runCommand placement path triggers a bug — currently just pistons
+ * (bug 5). Everything else goes through runCommand.
  */
-const RUNCOMMAND_ONLY_STATELESS: ReadonlySet<string> = new Set([
-  "minecraft:redstone_wire",
-  "minecraft:redstone_lamp",
-  "minecraft:redstone_block",
-]);
-
-const RUNCOMMAND_ONLY_STATEFUL: ReadonlySet<string> = new Set([
-  "minecraft:unpowered_repeater",
-  "minecraft:powered_repeater",
-  "minecraft:unpowered_comparator",
-  "minecraft:powered_comparator",
-  "minecraft:observer",
+const SET_PERMUTATION_IDS: ReadonlySet<string> = new Set([
   "minecraft:piston",
   "minecraft:sticky_piston",
 ]);
@@ -147,7 +116,7 @@ function placeOne(
  * placements. Returns the snapshot for the caller to associate with a
  * job for later /undo.
  */
-export async function executeBuild(spec: ContraptionSpec, anchor: Anchor): Promise<BuildResult> {
+export function executeBuild(spec: ContraptionSpec, anchor: Anchor): BuildResult {
   const dim = world.getDimension(anchor.dimension);
 
   const { placements, rotationSteps } = planPlacements(spec, anchor);
@@ -155,113 +124,21 @@ export async function executeBuild(spec: ContraptionSpec, anchor: Anchor): Promi
   const snapshot = captureSnapshot(dim, positions);
 
   for (const p of placements) {
-    if (RUNCOMMAND_ONLY_STATELESS.has(p.id)) {
-      // Bare /setblock with no states. These blocks (wire, lamp) have
-      // engine-computed states like redstone_signal — explicitly setting
-      // them in the command pins them to fixed values and breaks
-      // subsequent propagation. The block's own default is fine.
-      try {
-        dim.runCommand(`setblock ${p.abs.x} ${p.abs.y} ${p.abs.z} ${p.id}`);
-      } catch (err) {
-        throw new Error(
-          `runCommand placement failed for ${p.id} at ${p.abs.x},${p.abs.y},${p.abs.z}: ${String(err)}`,
-        );
-      }
-      continue;
+    if (SET_PERMUTATION_IDS.has(p.id)) {
+      dim.setBlockPermutation(p.abs, p.permutation);
+    } else {
+      dim.runCommand(formatSetblockCommand(p.abs, p.permutation));
     }
-
-    if (RUNCOMMAND_ONLY_STATEFUL.has(p.id)) {
-      // /setblock with state values preserved. These blocks carry
-      // directional state (facing, delay, etc.) that must round-trip.
-      try {
-        dim.runCommand(formatSetblockCommand(p.abs, p.permutation));
-      } catch (err) {
-        throw new Error(
-          `runCommand placement failed for ${p.id} at ${p.abs.x},${p.abs.y},${p.abs.z}: ${String(err)}`,
-        );
-      }
-      continue;
-    }
-
-    // Default path: structural and non-redstone blocks (stone, glass,
-    // lever, button, pressure_plate, redstone_block, redstone_torch).
-    dim.setBlockPermutation(p.abs, p.permutation);
   }
-
-  // Pistons placed via runCommand setblock land correctly but never
-  // respond to redstone power. Workaround: have a SimulatedPlayer
-  // break-and-re-place each one via useItemOnBlock, which goes through
-  // the engine's real placement path and registers the piston in the
-  // redstone update graph. See bugs/script-api-piston-no-power-response.md
-  // (Update 2026-05-18). Cost: ~10 ticks per piston (synchronous on
-  // the dispatcher's async path, so the agent's POST /build waits).
-  await kickPistons(dim, placements);
 
   const bounds = computeBounds(positions);
   return { placed: placements.length, snapshot, bounds, rotationSteps };
 }
 
-const PISTON_IDS = new Set(["minecraft:piston", "minecraft:sticky_piston"]);
-
-async function kickPistons(dim: Dimension, placements: readonly Placement[]): Promise<void> {
-  for (const p of placements) {
-    if (!PISTON_IDS.has(p.id)) continue;
-
-    // Resolve the head-extension direction from the piston's already-rotated
-    // facing_direction state (the placements went through planPlacements,
-    // which applied the rotation).
-    const fd = p.permutation.getState("facing_direction");
-    if (typeof fd !== "number") {
-      console.warn(`[rsforge] kickPistons: piston at ${fmt(p.abs)} has no numeric facing_direction; skipping kick`);
-      continue;
-    }
-    const headDir = pistonFacingDirectionToHeadDirection(fd);
-    if (headDir === null) {
-      console.warn(`[rsforge] kickPistons: piston at ${fmt(p.abs)} has unknown facing_direction=${fd}; skipping kick`);
-      continue;
-    }
-    const offset = faceOffset(headDir);
-    const supportPos: Vector3 = {
-      x: p.abs.x - offset.x,
-      y: p.abs.y - offset.y,
-      z: p.abs.z - offset.z,
-    };
-
-    // Sim-replace requires a solid block to click. If the back of the
-    // piston isn't solid (or doesn't exist), skip the kick — the piston
-    // will land via runCommand but won't respond to redstone power.
-    // This is preferable to breaking the piston and being unable to
-    // replace it, which would leave a hole in the contraption.
-    const supportBlock = dim.getBlock(supportPos);
-    if (!supportBlock || supportBlock.typeId === "minecraft:air") {
-      console.warn(
-        `[rsforge] kickPistons: piston at ${fmt(p.abs)} (fd=${fd}) has no solid block at ${fmt(supportPos)} for sim-replace; skipping kick (piston will be inert)`,
-      );
-      continue;
-    }
-
-    try {
-      const result = await simReplaceBlock(dim, p.abs, supportPos, headDir, p.id);
-      if (!result.placed) {
-        console.warn(`[rsforge] kickPistons: sim-replace at ${fmt(p.abs)} did not place — ${result.details}`);
-      }
-    } catch (err) {
-      console.warn(`[rsforge] kickPistons: sim-replace at ${fmt(p.abs)} threw: ${String(err)}`);
-    }
-  }
-}
-
-function fmt(v: Vector3): string {
-  return `${v.x},${v.y},${v.z}`;
-}
-
 /**
  * Format a `/setblock` command string that preserves block-state values.
- * Used for the `runCommand` re-registration of stateful redstone blocks
- * placed by `setBlockPermutation`. Without preserving the states the
- * re-register would overwrite the block with its default permutation
- * (e.g. a piston facing down instead of east), which is worse than the
- * bug we're working around.
+ * For stateless blocks the command is bare; for stateful ones the
+ * states are spelled out in Bedrock's bracket syntax.
  */
 function formatSetblockCommand(pos: Vector3, perm: BlockPermutation): string {
   const states = perm.getAllStates();

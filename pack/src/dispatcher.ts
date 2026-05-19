@@ -13,8 +13,6 @@ import { validateSpec } from "./spec/schema.js";
 import { runAllTests, runTest } from "./test/runner.js";
 import { executeBuild, planPlacements } from "./world/builder.js";
 import { restoreSnapshot } from "./world/snapshot.js";
-import { simReplaceBlock } from "./world/sim-player.js";
-import { Direction } from "@minecraft/server";
 
 export type Command =
   | { jobId: string; type: "build"; payload: { spec: unknown } }
@@ -23,8 +21,7 @@ export type Command =
   | { jobId: string; type: "test";  payload: { jobId?: string; testName?: string } }
   | { jobId: string; type: "world"; payload: { bounds: [number, number, number, number, number, number]; dimension?: string } }
   | { jobId: string; type: "setanchor"; payload: { x: number; y: number; z: number; facing: string; dimension?: string } }
-  | { jobId: string; type: "runCommand"; payload: { command: string; dimension?: string } }
-  | { jobId: string; type: "simReplace"; payload: { target: [number, number, number]; support: [number, number, number]; face: string; itemId: string; dimension?: string } };
+  | { jobId: string; type: "runCommand"; payload: { command: string; dimension?: string } };
 
 export type CommandResult =
   | { ok: true; data: unknown }
@@ -33,14 +30,13 @@ export type CommandResult =
 export async function dispatch(cmd: Command): Promise<CommandResult> {
   try {
     switch (cmd.type) {
-      case "build": return await handleBuild(cmd.payload, cmd.jobId);
+      case "build": return handleBuild(cmd.payload, cmd.jobId);
       case "undo":  return handleUndo(cmd.payload);
-      case "redo":  return await handleRedo(cmd.payload, cmd.jobId);
+      case "redo":  return handleRedo(cmd.payload, cmd.jobId);
       case "test":  return await handleTest(cmd.payload);
       case "world": return handleWorld(cmd.payload);
       case "setanchor": return handleSetAnchor(cmd.payload);
       case "runCommand": return handleRunCommand(cmd.payload);
-      case "simReplace": return await handleSimReplace(cmd.payload);
       default: {
         const t = (cmd as { type?: unknown }).type;
         return { ok: false, error: `unknown command type: ${String(t)}` };
@@ -53,11 +49,7 @@ export async function dispatch(cmd: Command): Promise<CommandResult> {
 
 // ---------- build ----------
 
-function handleBuild(payload: { spec: unknown }, jobId: string): Promise<CommandResult> {
-  return handleBuildAsync(payload, jobId);
-}
-
-async function handleBuildAsync(payload: { spec: unknown }, jobId: string): Promise<CommandResult> {
+function handleBuild(payload: { spec: unknown }, jobId: string): CommandResult {
   const v = validateSpec(payload.spec);
   if (!v.ok) {
     return { ok: false, error: "spec validation failed", errors: v.errors };
@@ -74,7 +66,7 @@ async function handleBuildAsync(payload: { spec: unknown }, jobId: string): Prom
 
   let result;
   try {
-    result = await executeBuild(spec, anchor);
+    result = executeBuild(spec, anchor);
   } catch (err) {
     return { ok: false, error: `build failed: ${String(err)}` };
   }
@@ -138,11 +130,7 @@ function handleUndo(payload: { jobId?: string }): CommandResult {
 
 // ---------- redo ----------
 
-function handleRedo(payload: { jobId?: string }, newJobId: string): Promise<CommandResult> {
-  return handleRedoAsync(payload, newJobId);
-}
-
-async function handleRedoAsync(payload: { jobId?: string }, newJobId: string): Promise<CommandResult> {
+function handleRedo(payload: { jobId?: string }, newJobId: string): CommandResult {
   const job = payload.jobId ? getJob(payload.jobId) : latestUndone();
   if (!job) {
     return {
@@ -159,7 +147,7 @@ async function handleRedoAsync(payload: { jobId?: string }, newJobId: string): P
   // Re-execute the same build (same spec + same anchor + same rotation).
   let result;
   try {
-    result = await executeBuild(job.spec, job.anchor);
+    result = executeBuild(job.spec, job.anchor);
   } catch (err) {
     return { ok: false, error: `redo failed: ${String(err)}` };
   }
@@ -300,61 +288,6 @@ function handleRunCommand(payload: { command: string; dimension?: string }): Com
     return { ok: true, data: { command: cmd, dimension: dimId, successCount: result.successCount } };
   } catch (err) {
     return { ok: false, error: `runCommand failed: ${String(err)}` };
-  }
-}
-
-// ---------- simReplace ----------
-
-const DIRECTION_BY_NAME: Record<string, Direction> = {
-  up: Direction.Up,
-  down: Direction.Down,
-  north: Direction.North,
-  south: Direction.South,
-  east: Direction.East,
-  west: Direction.West,
-};
-
-async function handleSimReplace(payload: {
-  target: [number, number, number];
-  support: [number, number, number];
-  face: string;
-  itemId: string;
-  dimension?: string;
-}): Promise<CommandResult> {
-  const { target, support, face, itemId } = payload;
-  if (!Array.isArray(target) || target.length !== 3 || !target.every(Number.isInteger)) {
-    return { ok: false, error: "simReplace: target must be [x,y,z] integers" };
-  }
-  if (!Array.isArray(support) || support.length !== 3 || !support.every(Number.isInteger)) {
-    return { ok: false, error: "simReplace: support must be [x,y,z] integers" };
-  }
-  const faceKey = face.toLowerCase();
-  const dir = DIRECTION_BY_NAME[faceKey];
-  if (!dir) {
-    return { ok: false, error: `simReplace: face must be one of ${Object.keys(DIRECTION_BY_NAME).join("|")} (got '${face}')` };
-  }
-  if (typeof itemId !== "string" || !itemId) {
-    return { ok: false, error: "simReplace: itemId must be a non-empty string" };
-  }
-  const dimId = payload.dimension ?? "minecraft:overworld";
-  let dim;
-  try { dim = world.getDimension(dimId); }
-  catch { return { ok: false, error: `simReplace: unknown dimension '${dimId}'` }; }
-
-  try {
-    const result = await simReplaceBlock(
-      dim,
-      { x: target[0], y: target[1], z: target[2] },
-      { x: support[0], y: support[1], z: support[2] },
-      dir,
-      itemId,
-    );
-    if (result.placed) {
-      return { ok: true, data: { target, support, face: faceKey, itemId, ...result } };
-    }
-    return { ok: false, error: `simReplace did not place block: ${result.details}` };
-  } catch (err) {
-    return { ok: false, error: `simReplace failed: ${String(err)}` };
   }
 }
 

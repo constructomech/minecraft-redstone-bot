@@ -72,7 +72,6 @@ switch (cmd) {
   case "test":    await cliTest(process.argv[3], process.argv[4]); break;
   case "world":   await cliWorld(process.argv.slice(3)); break;
   case "cmd":     await cliRunCommand(process.argv.slice(3)); break;
-  case "sim-replace": await cliSimReplace(process.argv.slice(3)); break;
   case "help":
   default:        printHelp(); process.exit(cmd === "help" ? 0 : 2);
 }
@@ -90,9 +89,6 @@ function printHelp() {
   node tools/forge.mjs test [jobId] [test]         POST /test
   node tools/forge.mjs world <x1> <y1> <z1> <x2> <y2> <z2>   GET /world?bounds=...
   node tools/forge.mjs cmd "<slash command>"        POST /command (runCommand in overworld)
-  node tools/forge.mjs sim-replace <tx> <ty> <tz> <sx> <sy> <sz> <face> <itemId>
-                                                    sim-player breaks target and places itemId
-                                                    by clicking <face> of support block
 
 facing must be one of: north, south, east, west
 
@@ -312,29 +308,6 @@ function runDaemon() {
         }
       }
 
-      if (req.method === "POST" && url.pathname === "/sim-replace") {
-        let payload;
-        try { payload = JSON.parse(body || "{}"); }
-        catch { return send(400, { error: "invalid json" }); }
-        if (!Array.isArray(payload.target) || !Array.isArray(payload.support) ||
-            typeof payload.face !== "string" || typeof payload.itemId !== "string") {
-          return send(400, { error: "body must be { target:[x,y,z], support:[x,y,z], face: string, itemId: string }" });
-        }
-        try {
-          const result = await enqueueCommand("simReplace", {
-            target: payload.target,
-            support: payload.support,
-            face: payload.face,
-            itemId: payload.itemId,
-            dimension: payload.dimension,
-          });
-          const status = result?.ok === false ? 422 : 200;
-          return send(status, result);
-        } catch (err) {
-          return send(504, { ok: false, error: String(err.message ?? err) });
-        }
-      }
-
       if (req.method === "POST" && url.pathname === "/command") {
         let payload;
         try { payload = JSON.parse(body || "{}"); }
@@ -416,21 +389,6 @@ function runDaemon() {
 // ──────────────────────────────────────────────────────────────
 // CLI
 // ──────────────────────────────────────────────────────────────
-
-async function cliSimReplace(args) {
-  if (args.length < 8) {
-    console.error("forge sim-replace: need <tx> <ty> <tz> <sx> <sy> <sz> <face> <itemId>");
-    process.exit(2);
-  }
-  const [txs, tys, tzs, sxs, sys, szs, face, itemId] = args;
-  const target = [Number.parseInt(txs, 10), Number.parseInt(tys, 10), Number.parseInt(tzs, 10)];
-  const support = [Number.parseInt(sxs, 10), Number.parseInt(sys, 10), Number.parseInt(szs, 10)];
-  if (target.some((n) => !Number.isFinite(n)) || support.some((n) => !Number.isFinite(n))) {
-    console.error("forge sim-replace: target and support coords must be integers");
-    process.exit(2);
-  }
-  await cliCall("POST", "/sim-replace", JSON.stringify({ target, support, face, itemId }), "application/json");
-}
 
 async function cliRunCommand(args) {
   if (args.length === 0) {

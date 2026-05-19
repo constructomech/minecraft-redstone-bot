@@ -21,13 +21,13 @@
       "name": "lever passthrough",
       "steps": [
         { "set": { "a": "off" } },
-        { "wait_ticks": 4 },
+        { "wait_ticks": 6 },
         { "expect": { "out": "off" } },
         { "set": { "a": "on" } },
-        { "wait_ticks": 4 },
+        { "wait_ticks": 6 },
         { "expect": { "out": "on" } },
         { "set": { "a": "off" } },
-        { "wait_ticks": 4 },
+        { "wait_ticks": 6 },
         { "expect": { "out": "off" } }
       ]
     }

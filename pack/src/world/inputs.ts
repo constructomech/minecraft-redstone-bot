@@ -49,10 +49,21 @@ async function driveLever(dim: Dimension, pos: Vector3, on: boolean): Promise<vo
       `driveLever: expected minecraft:lever at ${pos.x},${pos.y},${pos.z}, found ${block.typeId}`,
     );
   }
-  // Interact toggles. Only click if current != desired.
-  const currentlyOn = block.permutation.getState("open_bit") === true;
-  if (currentlyOn === on) return;
-  await simInteractWithBlock(dim, pos);
+  // Interact toggles. Only click if current != desired. Retry once if
+  // the first click didn't actually flip the state (rare but happens —
+  // SimulatedPlayer.interact()'s raycast occasionally misses the lever
+  // on the first try right after spawn).
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const current = dim.getBlock(pos)?.permutation.getState("open_bit") === true;
+    if (current === on) return;
+    await simInteractWithBlock(dim, pos);
+  }
+  const finalState = dim.getBlock(pos)?.permutation.getState("open_bit") === true;
+  if (finalState !== on) {
+    throw new Error(
+      `driveLever: failed to set lever at ${pos.x},${pos.y},${pos.z} to ${on ? "on" : "off"} after 3 attempts`,
+    );
+  }
 }
 
 function driveRedstoneBlock(dim: Dimension, pos: Vector3, on: boolean): void {
