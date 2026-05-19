@@ -13,6 +13,8 @@ import { validateSpec } from "./spec/schema.js";
 import { runAllTests, runTest } from "./test/runner.js";
 import { executeBuild, planPlacements } from "./world/builder.js";
 import { restoreSnapshot } from "./world/snapshot.js";
+import { simReplaceBlock } from "./world/sim-player.js";
+import { Direction } from "@minecraft/server";
 
 export type Command =
   | { jobId: string; type: "build"; payload: { spec: unknown } }
@@ -21,7 +23,8 @@ export type Command =
   | { jobId: string; type: "test";  payload: { jobId?: string; testName?: string } }
   | { jobId: string; type: "world"; payload: { bounds: [number, number, number, number, number, number]; dimension?: string } }
   | { jobId: string; type: "setanchor"; payload: { x: number; y: number; z: number; facing: string; dimension?: string } }
-  | { jobId: string; type: "runCommand"; payload: { command: string; dimension?: string } };
+  | { jobId: string; type: "runCommand"; payload: { command: string; dimension?: string } }
+  | { jobId: string; type: "simReplace"; payload: { target: [number, number, number]; support: [number, number, number]; face: string; itemId: string; dimension?: string } };
 
 export type CommandResult =
   | { ok: true; data: unknown }
@@ -37,6 +40,7 @@ export async function dispatch(cmd: Command): Promise<CommandResult> {
       case "world": return handleWorld(cmd.payload);
       case "setanchor": return handleSetAnchor(cmd.payload);
       case "runCommand": return handleRunCommand(cmd.payload);
+      case "simReplace": return await handleSimReplace(cmd.payload);
       default: {
         const t = (cmd as { type?: unknown }).type;
         return { ok: false, error: `unknown command type: ${String(t)}` };
@@ -288,6 +292,58 @@ function handleRunCommand(payload: { command: string; dimension?: string }): Com
     return { ok: true, data: { command: cmd, dimension: dimId, successCount: result.successCount } };
   } catch (err) {
     return { ok: false, error: `runCommand failed: ${String(err)}` };
+  }
+}
+
+// ---------- simReplace ----------
+
+const DIRECTION_BY_NAME: Record<string, Direction> = {
+  up: Direction.Up,
+  down: Direction.Down,
+  north: Direction.North,
+  south: Direction.South,
+  east: Direction.East,
+  west: Direction.West,
+};
+
+async function handleSimReplace(payload: {
+  target: [number, number, number];
+  support: [number, number, number];
+  face: string;
+  itemId: string;
+  dimension?: string;
+}): Promise<CommandResult> {
+  const { target, support, face, itemId } = payload;
+  if (!Array.isArray(target) || target.length !== 3 || !target.every(Number.isInteger)) {
+    return { ok: false, error: "simReplace: target must be [x,y,z] integers" };
+  }
+  if (!Array.isArray(support) || support.length !== 3 || !support.every(Number.isInteger)) {
+    return { ok: false, error: "simReplace: support must be [x,y,z] integers" };
+  }
+  const faceKey = face.toLowerCase();
+  const dir = DIRECTION_BY_NAME[faceKey];
+  if (!dir) {
+    return { ok: false, error: `simReplace: face must be one of ${Object.keys(DIRECTION_BY_NAME).join("|")} (got '${face}')` };
+  }
+  if (typeof itemId !== "string" || !itemId) {
+    return { ok: false, error: "simReplace: itemId must be a non-empty string" };
+  }
+  const dimId = payload.dimension ?? "minecraft:overworld";
+  let dim;
+  try { dim = world.getDimension(dimId); }
+  catch { return { ok: false, error: `simReplace: unknown dimension '${dimId}'` }; }
+
+  try {
+    const result = await simReplaceBlock(
+      dim,
+      { x: target[0], y: target[1], z: target[2] },
+      { x: support[0], y: support[1], z: support[2] },
+      dir,
+      itemId,
+    );
+    return { ok: result.placed, data: { target, support, face: faceKey, itemId, ...result } };
+  } catch (err) {
+    return { ok: false, error: `simReplace failed: ${String(err)}` };
   }
 }
 
