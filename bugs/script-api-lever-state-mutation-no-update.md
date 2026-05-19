@@ -86,16 +86,17 @@ The adjacent wire never sees a power update; the lamp never lights.
 
 ## Workaround
 
-We have not found a clean one yet. Likely candidates we haven't yet
-verified:
+Use `SimulatedPlayer.interact()` (from `@minecraft/server-gametest`)
+to right-click the lever instead of mutating its state from a script.
+A simulated player click goes through the same engine code path as a
+real player's right-click, and adjacent components see the lever as
+powered correctly.
 
-1. `dimension.runCommand("setblock 4 71 4 lever [\"open_bit\"=true,...]")` —
-   if the vanilla command goes through the proper update path.
-2. Removing and re-placing the lever each toggle, hoping fresh placement
-   fires updates.
-
-Neither is great UX for a high-frequency test runner that flips inputs
-between every test step.
+`pack/src/world/sim-player.ts:simInteractWithBlock` is the helper used
+by the test runner's `driveLever` to drive the lever between test
+steps. It spawns a transient `SimulatedPlayer`, has it click the lever
+once if its current `open_bit` differs from the desired value, then
+removes the player. ~6 ticks per click.
 
 ## Why it matters for our project
 
@@ -107,6 +108,9 @@ propagate.
 
 ## Possibly related
 
-- `script-api-setblock-no-neighbor-redstone-update.md` — same pattern: a
-  programmatic Script API mutation that should fire neighbor block updates
-  doesn't fire them.
+- ~~`script-api-setblock-no-neighbor-redstone-update.md`~~ — same pattern
+  was suspected (programmatic Script API mutation that should fire
+  neighbor block updates doesn't), but as of 2026-05-19 re-verification
+  setBlockType / setBlockPermutation for a NEW block placement DO fire
+  neighbor updates correctly. The remaining gap is specifically about
+  *mutating an existing block's state*, which this report is about.

@@ -11,45 +11,61 @@ Tested against:
 - `@minecraft/server` **2.8.0-beta.1.26.21-stable**
 - `@minecraft/server-net` **1.0.0-beta.1.26.21-stable**
 - `@minecraft/server-admin` **1.0.0-beta.1.26.21-stable**
+- `@minecraft/server-gametest` **1.0.0-beta.1.26.21-stable**
 
 ## Open
 
-- [`script-api-setblock-no-neighbor-redstone-update.md`](script-api-setblock-no-neighbor-redstone-update.md)
-  — `Dimension.setBlockType` / `setBlockPermutation` placing or removing
-  a power source next to existing redstone wire doesn't notify the wire
-  to re-evaluate. Wire stays unpowered.
 - [`script-api-lever-state-mutation-no-update.md`](script-api-lever-state-mutation-no-update.md)
-  — Mutating a lever's `open_bit` via `block.permutation.withState(...)`
-  + `setBlockPermutation` flips the state value but doesn't propagate
-  power.
-- [`script-api-lever-physics-drop-after-setblock.md`](script-api-lever-physics-drop-after-setblock.md)
-  — Levers placed by `setBlockPermutation` are dropped by a scheduled
-  physics update ~5 ticks later (no attached-to-block pointer).
-- [`script-api-lamp-destroyed-on-transition.md`](script-api-lamp-destroyed-on-transition.md)
-  — `redstone_lamp` placed by `setBlockPermutation` is destroyed
-  (replaced with air) instead of transitioning to `lit_redstone_lamp`
-  when adjacent wire becomes powered. Lamp placed by
-  `runCommand("setblock ...")` transitions correctly.
+  — Mutating an existing lever's `open_bit` via
+  `block.permutation.withState(...)` + `setBlockPermutation` flips the
+  stored state but does not fire neighbour updates. Adjacent wire stays
+  at `redstone_signal: 0`; adjacent lamp stays unlit. Workaround: use a
+  `SimulatedPlayer.interact()` click instead — the click goes through
+  the engine's player-action path and propagates correctly.
 - [`script-api-piston-no-power-response.md`](script-api-piston-no-power-response.md)
-  — Piston placed via `runCommand("setblock ...")` lands correctly but
-  doesn't respond when a `redstone_block` is then placed adjacent to it
-  the same way. The piston never extends. A player placing the
-  redstone_block by hand triggers extension immediately. **Most severe
-  of the five for our project — it blocks automated testing of any
-  piston-based contraption.**
+  — Pistons placed via `runCommand setblock` (or `setBlockPermutation`)
+  never extend, regardless of how the adjacent power source was placed.
+  Workaround: have a `SimulatedPlayer` break the piston and place a
+  fresh one via `useItemOnBlock`; the resulting piston is correctly
+  registered in the redstone update graph and tracks power changes from
+  the adjacent runCommand-placed source. **Most severe of the two for
+  this project — drives the post-placement "kick pistons" pass in
+  `executeBuild`.**
 
-All five almost certainly share a root cause: blocks introduced or
-modified via the Script API's block-set methods, or even via
-`Dimension.runCommand`, end up in a different state graph than the
-same operations done from player actions, specifically with respect
-to neighbour update notifications and physics-validity bookkeeping.
-Fixing the underlying "make Script API placements participate in the
-same update queues that player placements do" should clear most of
-these reports at once.
+## Closed (no longer reproduce on BDS 1.26.21.1)
+
+Three earlier reports filed against the same BDS version no longer
+reproduce when re-tested with the current pack. The repros from those
+reports were re-run from scratch on 2026-05-19 with the world cleaned
+between trials; the bugs are gone.
+
+- ~~`script-api-setblock-no-neighbor-redstone-update.md`~~ — placing
+  redstone power sources via `setBlockType` or `setBlockPermutation`
+  adjacent to existing wire now correctly fires the wire's update
+  evaluation. Wire goes to `redstone_signal: 15` as a player placement
+  would.
+- ~~`script-api-lever-physics-drop-after-setblock.md`~~ — levers placed
+  via `setBlockPermutation` on a valid floor support survive
+  indefinitely (verified at 100+ ticks in a fresh chunk with no players
+  loaded). The original "drops after ~5 ticks" symptom is gone.
+- ~~`script-api-lamp-destroyed-on-transition.md`~~ — `redstone_lamp`
+  placed via `setBlockPermutation` correctly transitions to
+  `lit_redstone_lamp` when an adjacent wire becomes powered. The
+  original "destroyed instead of transitioning" symptom is gone.
+
+Mojang either fixed these between filing and the re-verification window
+or the original repros had a confounding factor we didn't isolate. In
+either case the pack's workarounds for these three are now unnecessary,
+though we haven't yet removed the `runCommand`-based placement paths
+in `pack/src/world/builder.ts` that exist to work around them.
+
+The remaining two open bugs are about a different code path
+(propagation from already-placed source whose state mutates rather than
+from a new placement), and that gap still appears genuine.
 
 ## How to reproduce against this repo
 
-Each bug report has a minimal self-contained repro. End-to-end:
+Each open bug report has a minimal self-contained repro. End-to-end:
 
 1. Clone https://github.com/constructomech/minecraft-redstone-bot
 2. `npm install`

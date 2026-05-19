@@ -132,29 +132,11 @@ six neighbours of a piston for either `piston_arm_collision` or
 `sticky_piston_arm_collision` instead of trusting the
 `facing_direction` state.
 
-### Finding 3: `runCommand`-placed pistons are fragile
-
-A piston placed via `runCommand setblock` with `facing_direction: 5`
-(wiki's "east", engine's interpretation unclear) is *destroyed* when
-the adjacent block at +x is changed via `setblock`. The destruction
-fires even when no power is involved — e.g., swapping a wire to
-stone at the piston's +x neighbour deletes the piston, replacing it
-with air. The same swap on a piston with `facing_direction: 4`
-leaves the piston intact.
-
-This blocks the obvious "build → temporarily swap wire for stone to
-have a sim-replace support → restore wire" recipe for circuits that
-need wire directly adjacent to the piston: the swap kills the
-piston before sim-replace can run.
-
 ### Workaround that works as of this filing
 
 For any piston in a contraption:
 
-1. Place via `runCommand setblock` with `facing_direction` matching
-   the desired empirical extension direction (use **4** to make
-   the head extend east, **5** for west — opposite of wiki) so the
-   piston survives subsequent neighbour changes.
+1. Place via `runCommand setblock` with the desired `facing_direction`.
 2. Have a SimulatedPlayer break the piston and re-place it via
    `useItemOnBlock` on an adjacent solid block. The face direction
    passed to `useItemOnBlock` becomes the extension direction.

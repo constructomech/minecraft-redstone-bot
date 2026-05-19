@@ -15,7 +15,7 @@
  * `debug_state` writes the current anchor JSON to the BDS console so
  * the harness can match it from stdout if it needs to.
  */
-import { system, world } from "@minecraft/server";
+import { system, world, BlockPermutation } from "@minecraft/server";
 import { variables } from "@minecraft/server-admin";
 import {
   clearAnchor,
@@ -60,6 +60,12 @@ function handle(id: string, message: string): void {
         break;
       case "rsforge:debug_blockat":
         debugBlockAt(message);
+        break;
+      case "rsforge:debug_setperm":
+        debugSetPermutation(message);
+        break;
+      case "rsforge:debug_setstate":
+        debugSetState(message);
         break;
       default:
         // Other rsforge:* scriptevents are not ours; ignore.
@@ -116,6 +122,75 @@ function debugClearAnchor(): void {
 function debugState(): void {
   const a = getAnchor();
   console.log(`[rsforge] debug_state: anchor=${JSON.stringify(a)}`);
+}
+
+/**
+ * Mutate a single state value on the block at (x, y, z) via
+ * `block.permutation.withState(...)` + `setBlockPermutation`. Used to
+ * empirically test whether state mutations fire neighbour updates the
+ * way a player toggle would.
+ *
+ * Payload: "<x> <y> <z> <key> <value>"
+ *   value parses as: "true"/"false" -> boolean, integer string -> number,
+ *   otherwise string.
+ *   e.g. "8 81 8 open_bit true"
+ */
+function debugSetState(message: string): void {
+  const parts = message.trim().split(/\s+/);
+  if (parts.length < 5) {
+    console.error(`[rsforge] debug_setstate: expected "<x> <y> <z> <key> <value>"`);
+    return;
+  }
+  const [xs, ys, zs, key, valStr] = parts as [string, string, string, string, string];
+  const x = Number.parseInt(xs, 10);
+  const y = Number.parseInt(ys, 10);
+  const z = Number.parseInt(zs, 10);
+  let value: string | number | boolean = valStr;
+  if (valStr === "true") value = true;
+  else if (valStr === "false") value = false;
+  else if (/^-?\d+$/.test(valStr)) value = Number.parseInt(valStr, 10);
+  const dim = world.getDimension("minecraft:overworld");
+  try {
+    const block = dim.getBlock({ x, y, z });
+    if (!block) {
+      console.error(`[rsforge] debug_setstate: block at ${x},${y},${z} is null`);
+      return;
+    }
+    const newPerm = block.permutation.withState(key, value);
+    dim.setBlockPermutation({ x, y, z }, newPerm);
+    console.log(`[rsforge] debug_setstate: ${block.typeId}.${key} -> ${String(value)} at ${x},${y},${z}`);
+  } catch (err) {
+    console.error(`[rsforge] debug_setstate failed: ${String(err)}`);
+  }
+}
+
+/**
+ * Place a block via `setBlockPermutation` (the Script API path) — the
+ * one historically suspected of bypassing neighbour updates. Used to
+ * empirically compare against `runCommand setblock` placement in the
+ * same scenario.
+ *
+ * Payload: "<x> <y> <z> <blockId>"
+ *   e.g. "8 81 8 minecraft:redstone_block"
+ */
+function debugSetPermutation(message: string): void {
+  const parts = message.trim().split(/\s+/);
+  if (parts.length < 4) {
+    console.error(`[rsforge] debug_setperm: expected "<x> <y> <z> <id>"`);
+    return;
+  }
+  const [xs, ys, zs, blockId] = parts as [string, string, string, string];
+  const x = Number.parseInt(xs, 10);
+  const y = Number.parseInt(ys, 10);
+  const z = Number.parseInt(zs, 10);
+  const dim = world.getDimension("minecraft:overworld");
+  try {
+    const perm = BlockPermutation.resolve(blockId);
+    dim.setBlockPermutation({ x, y, z }, perm);
+    console.log(`[rsforge] debug_setperm: ${blockId} at ${x},${y},${z} (via setBlockPermutation)`);
+  } catch (err) {
+    console.error(`[rsforge] debug_setperm failed: ${String(err)}`);
+  }
 }
 
 /**
